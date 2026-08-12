@@ -1,0 +1,46 @@
+# Сборка
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+compile_commands.json
+
+# Qt
+*.user
+*.user.*
+*.autosave
+*.moc
+moc_*.cpp
+moc_*.h
+ui_*.h
+*.o
+*.so
+*.a
+*.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Отладочные файлы
+core
+*.core
+*.dSYM
+
+# Логи
+*.log
+*.tmp
+
+# Исполняемые файлы
+filter_visualizer
+filter_visualizer_autogen/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
