@@ -34,3 +34,40 @@
 - **POSIX sockets** (UDP)
 
 ## 📁 Структура проекта
+FilterVizualizer/
+├── src/
+│ ├── main.cpp
+│ ├── MainWindow.h/cpp
+│ ├── UDPReceiver.h/cpp
+│ ├── UDPSender.h/cpp
+│ ├── DataBuffer.h/cpp
+│ ├── FIRFilter.h/cpp
+│ ├── IIRFilter.h/cpp
+│ └── PlotWidget.h/cpp
+├── external/
+│ └── qcustomplot/
+├── CMakeLists.txt
+├── .gitignore
+└── README.md
+
+## 🔧 Сборка
+
+```bash
+# Клонирование репозитория
+git clone https://github.com/ваш-username/FilterVizualizer.git
+cd FilterVizualizer
+
+# Скачивание QCustomPlot
+mkdir -p external
+cd external
+wget https://www.qcustomplot.com/release/2.1.0/QCustomPlot.tar.gz
+tar -xzf QCustomPlot.tar.gz
+mv qcustomplot-2.1.0 qcustomplot
+cd ..
+
+# Сборка
+mkdir build
+cd build
+cmake ..
+make -j4
+./filter_visualizer

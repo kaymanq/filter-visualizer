@@ -1,23 +1,27 @@
 #include "UDPReceiver.h"
 
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
 #include <iostream>
 
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+#define GET_LAST_ERROR() WSAGetLastError()
+#define ERRNO_IS_WOULDBLOCK() (WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+#define GET_LAST_ERROR() errno
+#define ERRNO_IS_WOULDBLOCK() (errno == EAGAIN || errno == EWOULDBLOCK)
 #endif
 
 UDPReceiver::UDPReceiver()
 {
     std::cout << "UDPReceiver: создан" << std::endl;
+
 #ifdef _WIN32
     WSADATA wsaData;
-    WSAStartup(MAKEWORD(2, 2), &wsaData);
+    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (result != 0)
+    {
+        std::cerr << "WSAStartup failed: " << result << std::endl;
+    }
 #endif
 }
 
@@ -25,14 +29,8 @@ UDPReceiver::~UDPReceiver()
 {
     std::cout << "UDPReceiver: деструктор" << std::endl;
     stop();
-    if (m_socketFd >= 0)
-    {
-#ifdef _WIN32
-        closesocket(m_socketFd);
-#else
-        close(m_socketFd);
-#endif
-    }
+    cleanup();
+
 #ifdef _WIN32
     WSACleanup();
 #endif
@@ -50,12 +48,16 @@ bool UDPReceiver::start(const std::string &bindAddr, int port)
 
     std::cout << "UDPReceiver::start: создаем сокет..." << std::endl;
     m_socketFd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (m_socketFd < 0)
+
+    if (m_socketFd == INVALID_SOCKET_VALUE)
     {
-        std::cerr << "Failed to create UDP socket" << std::endl;
+        std::cerr << "Failed to create UDP socket. Error: " << GET_LAST_ERROR() << std::endl;
         return false;
     }
 
+    SET_NONBLOCKING(m_socketFd);
+
+    // Настройка адреса
     memset(&m_bindAddr, 0, sizeof(m_bindAddr));
     m_bindAddr.sin_family = AF_INET;
     m_bindAddr.sin_port = htons(port);
@@ -69,12 +71,8 @@ bool UDPReceiver::start(const std::string &bindAddr, int port)
         if (inet_pton(AF_INET, bindAddr.c_str(), &m_bindAddr.sin_addr) <= 0)
         {
             std::cerr << "Invalid IP address: " << bindAddr << std::endl;
-#ifdef _WIN32
-            closesocket(m_socketFd);
-#else
-            close(m_socketFd);
-#endif
-            m_socketFd = -1;
+            CLOSE_SOCKET(m_socketFd);
+            m_socketFd = INVALID_SOCKET_VALUE;
             return false;
         }
     }
@@ -82,13 +80,9 @@ bool UDPReceiver::start(const std::string &bindAddr, int port)
     std::cout << "UDPReceiver::start: биндим сокет на порт " << port << "..." << std::endl;
     if (bind(m_socketFd, (struct sockaddr *)&m_bindAddr, sizeof(m_bindAddr)) < 0)
     {
-        std::cerr << "Failed to bind socket to port " << port << std::endl;
-#ifdef _WIN32
-        closesocket(m_socketFd);
-#else
-        close(m_socketFd);
-#endif
-        m_socketFd = -1;
+        std::cerr << "Failed to bind socket. Error: " << GET_LAST_ERROR() << std::endl;
+        CLOSE_SOCKET(m_socketFd);
+        m_socketFd = INVALID_SOCKET_VALUE;
         return false;
     }
 
@@ -107,26 +101,34 @@ void UDPReceiver::stop()
 
     if (m_running.load())
     {
+
         m_stopRequested.store(true);
         m_running.store(false);
+
+        if (m_socketFd != INVALID_SOCKET_VALUE)
+        {
+            CLOSE_SOCKET(m_socketFd);
+            m_socketFd = INVALID_SOCKET_VALUE;
+        }
+
         if (m_thread.joinable())
         {
             std::cout << "UDPReceiver::stop: ждем завершения потока..." << std::endl;
             m_thread.join();
             std::cout << "UDPReceiver::stop: поток завершен" << std::endl;
         }
-        if (m_socketFd >= 0)
-        {
-#ifdef _WIN32
-            closesocket(m_socketFd);
-#else
-            close(m_socketFd);
-#endif
-            m_socketFd = -1;
-        }
     }
 
     std::cout << "UDPReceiver::stop: завершено" << std::endl;
+}
+
+void UDPReceiver::cleanup()
+{
+    if (m_socketFd != INVALID_SOCKET_VALUE)
+    {
+        CLOSE_SOCKET(m_socketFd);
+        m_socketFd = INVALID_SOCKET_VALUE;
+    }
 }
 
 void UDPReceiver::setDataCallback(DataCallback callback)
@@ -138,20 +140,37 @@ void UDPReceiver::receiverLoop()
 {
     std::cout << "UDPReceiver::receiverLoop: поток запущен" << std::endl;
 
+    char buffer[64];
     struct sockaddr_in clientAddr{};
     socklen_t clientLen = sizeof(clientAddr);
-    char buffer[64];
 
     while (!m_stopRequested.load())
     {
-        ssize_t recvLen = recvfrom(m_socketFd, buffer, sizeof(buffer), 0,
-                                   (struct sockaddr *)&clientAddr, &clientLen);
+        int recvLen = recvfrom(
+            m_socketFd,
+            buffer,
+            sizeof(buffer),
+            0,
+            (struct sockaddr *)&clientAddr,
+            &clientLen);
 
         if (recvLen < 0)
         {
+
             if (m_stopRequested.load())
+            {
+                std::cout << "UDPReceiver::receiverLoop: получен сигнал остановки" << std::endl;
                 break;
-            std::cerr << "recvfrom error" << std::endl;
+            }
+
+            // Неблокирующий режим: просто продолжаем
+            if (!ERRNO_IS_WOULDBLOCK())
+            {
+                std::cerr << "recvfrom error: " << GET_LAST_ERROR() << std::endl;
+            }
+
+            // Небольшая задержка, чтобы не грузить CPU
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
@@ -160,6 +179,13 @@ void UDPReceiver::receiverLoop()
             DataPoint point;
             memcpy(&point.timestamp, buffer, sizeof(uint32_t));
             memcpy(&point.value, buffer + sizeof(uint32_t), sizeof(float));
+
+            static int counter = 0;
+            if (++counter % 100 == 0)
+            {
+                std::cout << "UDPReceiver: получено " << counter
+                          << " пакетов, значение=" << point.value << std::endl;
+            }
 
             if (m_callback)
             {

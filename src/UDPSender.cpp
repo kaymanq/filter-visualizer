@@ -1,39 +1,45 @@
 #include "UDPSender.h"
 
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
 #include <iostream>
 
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+#define GET_LAST_ERROR() WSAGetLastError()
+#else
+#define GET_LAST_ERROR() errno
+#include <errno.h>
 #endif
 
 UDPSender::UDPSender()
 {
     std::cout << "UDPSender: создан" << std::endl;
+
+#ifdef _WIN32
+    // Winsock уже инициализирован в UDPReceiver
+#endif
+
     m_socketFd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (m_socketFd < 0)
+    if (m_socketFd == INVALID_SOCKET_VALUE)
     {
-        std::cerr << "Failed to create sender socket" << std::endl;
+        std::cerr << "Failed to create sender socket. Error: " << GET_LAST_ERROR() << std::endl;
     }
 }
 
 UDPSender::~UDPSender()
 {
     std::cout << "UDPSender: деструктор" << std::endl;
-    close();
+    closeSocket();
 }
 
 bool UDPSender::init(const std::string &targetIp, int targetPort)
 {
     std::cout << "UDPSender::init: " << targetIp << ":" << targetPort << std::endl;
 
-    if (m_socketFd < 0)
+    if (m_socketFd == INVALID_SOCKET_VALUE)
+    {
+        std::cerr << "UDPSender: сокет не создан" << std::endl;
         return false;
+    }
 
     memset(&m_targetAddr, 0, sizeof(m_targetAddr));
     m_targetAddr.sin_family = AF_INET;
@@ -52,29 +58,40 @@ bool UDPSender::init(const std::string &targetIp, int targetPort)
 
 void UDPSender::sendTarget(float value)
 {
-    if (!m_initialized || m_socketFd < 0)
+    if (!m_initialized || m_socketFd == INVALID_SOCKET_VALUE)
     {
         std::cerr << "UDPSender::sendTarget: не инициализирован" << std::endl;
         return;
     }
 
-    std::cout << "UDPSender::sendTarget: отправка " << value << std::endl;
-    sendto(m_socketFd, &value, sizeof(value), 0,
-           (struct sockaddr *)&m_targetAddr, sizeof(m_targetAddr));
+    int sent = sendto(
+        m_socketFd,
+        (const char *)&value,
+        sizeof(value),
+        0,
+        (struct sockaddr *)&m_targetAddr,
+        sizeof(m_targetAddr));
+
+    if (sent < 0)
+    {
+        std::cerr << "UDPSender::sendTarget: ошибка отправки. Error: " << GET_LAST_ERROR() << std::endl;
+    }
+    else
+    {
+        std::cout << "UDPSender::sendTarget: отправлено " << value << std::endl;
+    }
 }
 
-void UDPSender::close()
+void UDPSender::closeSocket()
 {
-    std::cout << "UDPSender::close: начало" << std::endl;
-    if (m_socketFd >= 0)
+    std::cout << "UDPSender::closeSocket: начало" << std::endl;
+
+    if (m_socketFd != INVALID_SOCKET_VALUE)
     {
-#ifdef _WIN32
-        closesocket(m_socketFd);
-#else
-        ::close(m_socketFd);
-#endif
-        m_socketFd = -1;
+        CLOSE_SOCKET(m_socketFd);
+        m_socketFd = INVALID_SOCKET_VALUE;
     }
+
     m_initialized = false;
-    std::cout << "UDPSender::close: завершено" << std::endl;
+    std::cout << "UDPSender::closeSocket: завершено" << std::endl;
 }

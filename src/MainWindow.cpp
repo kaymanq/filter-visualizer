@@ -398,7 +398,7 @@ void MainWindow::stopAll()
     std::cout << "stopAll: UDP Receiver остановлен" << std::endl;
 
     std::cout << "stopAll: закрываем UDP Sender..." << std::endl;
-    m_udpSender.close();
+    m_udpSender.closeSocket();
     std::cout << "stopAll: UDP Sender закрыт" << std::endl;
 
     std::cout << "stopAll: останавливаем FIR фильтр..." << std::endl;
