@@ -72,16 +72,45 @@ void FIRFilter::stop()
 void FIRFilter::setWindowSize(size_t size)
 {
     m_windowSize = (size % 2 == 0) ? size + 1 : size;
+    std::cout << "FIRFilter: window size = " << m_windowSize << std::endl;
 }
 
 void FIRFilter::setAlgorithm(Algorithm algo)
 {
     m_algorithm = algo;
+    std::cout << "FIRFilter: алгоритм изменен на ";
+    switch (algo)
+    {
+    case Algorithm::Boxcar:
+        std::cout << "Boxcar";
+        break;
+    case Algorithm::Hamming:
+        std::cout << "Hamming";
+        break;
+    case Algorithm::Blackman:
+        std::cout << "Blackman";
+        break;
+    case Algorithm::Median:
+        std::cout << "Median";
+        break;
+    case Algorithm::Gaussian:
+        std::cout << "Gaussian";
+        break;
+    case Algorithm::LowPass:
+        std::cout << "LowPass";
+        break;
+    default:
+        std::cout << "Unknown";
+        break;
+    }
+    std::cout << std::endl;
+    std::cout.flush();
 }
 
 void FIRFilter::setCutoffFrequency(double freq)
 {
     m_cutoffFreq = clamp(freq, 0.01, 0.99);
+    std::cout << "FIRFilter: cutoff frequency = " << m_cutoffFreq << std::endl;
 }
 
 void FIRFilter::setOutputCallback(OutputCallback callback)
@@ -92,6 +121,7 @@ void FIRFilter::setOutputCallback(OutputCallback callback)
 void FIRFilter::filterLoop()
 {
     std::cout << "FIRFilter::filterLoop: поток запущен" << std::endl;
+    std::cout.flush();
 
     std::vector<float> window;
     window.reserve(m_windowSize);
@@ -111,7 +141,16 @@ void FIRFilter::filterLoop()
             }
 
             DataPoint filtered;
-            filtered.timestamp = data.back().timestamp;
+
+            size_t centerIndex = start + m_windowSize / 2;
+            if (centerIndex < data.size())
+            {
+                filtered.timestamp = data[centerIndex].timestamp;
+            }
+            else
+            {
+                filtered.timestamp = data.back().timestamp;
+            }
 
             switch (m_algorithm)
             {
@@ -138,16 +177,29 @@ void FIRFilter::filterLoop()
                 break;
             }
 
+            // Проверка на NaN и Inf
+            if (std::isnan(filtered.value) || std::isinf(filtered.value))
+            {
+                static int warnCounter = 0;
+                if (warnCounter++ % 100 == 0)
+                {
+                    std::cout << "FIRFilter: ВЫХОДНЫЕ ДАННЫЕ NaN или Inf! Возвращаем входные данные" << std::endl;
+                    std::cout.flush();
+                }
+                filtered.value = data.back().value;
+            }
+
             if (m_outputCallback)
             {
                 m_outputCallback(filtered);
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     std::cout << "FIRFilter::filterLoop: поток завершен" << std::endl;
+    std::cout.flush();
 }
 
 float FIRFilter::boxcarFilter(const std::vector<float> &window) const
@@ -156,7 +208,9 @@ float FIRFilter::boxcarFilter(const std::vector<float> &window) const
         return 0.0f;
     float sum = 0.0f;
     for (float v : window)
+    {
         sum += v;
+    }
     return sum / static_cast<float>(window.size());
 }
 
@@ -165,7 +219,8 @@ float FIRFilter::hammingFilter(const std::vector<float> &window) const
     if (window.empty())
         return 0.0f;
     auto coeffs = getWindowCoefficients();
-    float sum = 0.0f, weightSum = 0.0f;
+    float sum = 0.0f;
+    float weightSum = 0.0f;
     for (size_t i = 0; i < window.size(); ++i)
     {
         sum += window[i] * coeffs[i];
@@ -178,8 +233,11 @@ float FIRFilter::blackmanFilter(const std::vector<float> &window) const
 {
     if (window.empty())
         return 0.0f;
-    const float a0 = 0.42f, a1 = 0.5f, a2 = 0.08f;
-    float sum = 0.0f, weightSum = 0.0f;
+    const float a0 = 0.42f;
+    const float a1 = 0.5f;
+    const float a2 = 0.08f;
+    float sum = 0.0f;
+    float weightSum = 0.0f;
     int N = static_cast<int>(window.size());
     for (int i = 0; i < N; ++i)
     {
@@ -206,7 +264,8 @@ float FIRFilter::gaussianFilter(const std::vector<float> &window) const
     if (window.empty())
         return 0.0f;
     float sigma = static_cast<float>(window.size()) / 6.0f;
-    float sum = 0.0f, weightSum = 0.0f;
+    float sum = 0.0f;
+    float weightSum = 0.0f;
     int N = static_cast<int>(window.size());
     int center = N / 2;
     for (int i = 0; i < N; ++i)
@@ -224,7 +283,8 @@ float FIRFilter::lowPassFilter(const std::vector<float> &window) const
     if (window.empty())
         return 0.0f;
     int N = static_cast<int>(window.size());
-    float sum = 0.0f, weightSum = 0.0f;
+    float sum = 0.0f;
+    float weightSum = 0.0f;
     float fc = static_cast<float>(m_cutoffFreq);
     int center = N / 2;
     float cutoff = fc * 2.0f;
@@ -241,6 +301,7 @@ float FIRFilter::lowPassFilter(const std::vector<float> &window) const
             double arg = M_PI * cutoff * x;
             sinc = static_cast<float>(cutoff * std::sin(arg) / (M_PI * cutoff * x));
         }
+        // Окно Хэмминга для уменьшения эффекта Гиббса
         double angle = 2.0 * M_PI * i / (N - 1);
         float hamming = 0.54f - 0.46f * static_cast<float>(std::cos(angle));
         float w = sinc * hamming;

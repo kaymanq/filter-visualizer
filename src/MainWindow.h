@@ -74,10 +74,8 @@ private:
     QSpinBox *m_windowSizeSpin{nullptr};
     QDoubleSpinBox *m_firCutoffSpin{nullptr};
 
-    QComboBox *m_iirAlgorithmCombo{nullptr};
+    // IIR - только Alpha
     QDoubleSpinBox *m_alphaSpin{nullptr};
-    QDoubleSpinBox *m_iirCutoffSpin{nullptr};
-    QSpinBox *m_iirOrderSpin{nullptr};
 
     QSpinBox *m_plotSizeSpin{nullptr};
     QLabel *m_statusLabel{nullptr};
