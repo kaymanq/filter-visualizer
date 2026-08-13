@@ -42,7 +42,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_plotTimer = new QTimer(this);
     connect(m_plotTimer, &QTimer::timeout, this, &MainWindow::onUpdatePlot);
-    m_plotTimer->start(33);
+    m_plotTimer->start(33); // ~30 FPS
 
     m_statusLabel = new QLabel("Ready. Press 'Start' to begin.");
     statusBar()->addWidget(m_statusLabel);
@@ -139,45 +139,17 @@ void MainWindow::setupUI()
     QWidget *iirTab = new QWidget();
     QFormLayout *iirLayout = new QFormLayout(iirTab);
 
-    m_iirAlgorithmCombo = new QComboBox();
-    m_iirAlgorithmCombo->addItem("Exponential Smoothing", 0);
-    m_iirAlgorithmCombo->addItem("Butterworth 2nd Order", 1);
-    m_iirAlgorithmCombo->addItem("Chebyshev 2nd Order", 2);
-    m_iirAlgorithmCombo->addItem("Bessel 2nd Order", 3);
-    iirLayout->addRow("IIR Algorithm:", m_iirAlgorithmCombo);
-
     m_alphaSpin = new QDoubleSpinBox();
     m_alphaSpin->setRange(0.01, 1.0);
     m_alphaSpin->setSingleStep(0.05);
     m_alphaSpin->setValue(0.3);
     iirLayout->addRow("Alpha (0-1):", m_alphaSpin);
 
-    m_iirOrderSpin = new QSpinBox();
-    m_iirOrderSpin->setRange(1, 4);
-    m_iirOrderSpin->setValue(2);
-    m_iirOrderSpin->setEnabled(false);
-    iirLayout->addRow("Filter Order:", m_iirOrderSpin);
-
-    m_iirCutoffSpin = new QDoubleSpinBox();
-    m_iirCutoffSpin->setRange(0.01, 0.99);
-    m_iirCutoffSpin->setSingleStep(0.05);
-    m_iirCutoffSpin->setValue(0.3);
-    m_iirCutoffSpin->setEnabled(false);
-    iirLayout->addRow("Cutoff Frequency (0-1):", m_iirCutoffSpin);
-
-    connect(m_iirAlgorithmCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &MainWindow::onAlgorithmChanged);
     connect(m_alphaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [this](double v)
             { m_iirFilter.setAlpha(static_cast<float>(v)); });
-    connect(m_iirOrderSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            [this](int v)
-            { m_iirFilter.setOrder(v); });
-    connect(m_iirCutoffSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [this](double v)
-            { m_iirFilter.setCutoffFrequency(static_cast<float>(v)); });
 
-    tabs->addTab(iirTab, "IIR Filters");
+    tabs->addTab(iirTab, "IIR Filter");
 
     QWidget *displayTab = new QWidget();
     QFormLayout *displayLayout = new QFormLayout(displayTab);
@@ -231,7 +203,7 @@ void MainWindow::setupUI()
 
 void MainWindow::onAlgorithmChanged()
 {
-    // FIR
+    // ---- FIR ----
     int firIdx = m_firAlgorithmCombo->currentIndex();
     if (firIdx >= 0)
     {
@@ -262,37 +234,6 @@ void MainWindow::onAlgorithmChanged()
         }
         m_firFilter.setAlgorithm(algo);
         m_firCutoffSpin->setEnabled(algo == FIRFilter::Algorithm::LowPass);
-    }
-
-    // IIR
-    int iirIdx = m_iirAlgorithmCombo->currentIndex();
-    if (iirIdx >= 0)
-    {
-        IIRFilter::Algorithm algo;
-        switch (iirIdx)
-        {
-        case 0:
-            algo = IIRFilter::Algorithm::Exponential;
-            break;
-        case 1:
-            algo = IIRFilter::Algorithm::Butterworth;
-            break;
-        case 2:
-            algo = IIRFilter::Algorithm::Chebyshev;
-            break;
-        case 3:
-            algo = IIRFilter::Algorithm::Bessel;
-            break;
-        default:
-            algo = IIRFilter::Algorithm::Exponential;
-            break;
-        }
-        m_iirFilter.setAlgorithm(algo);
-        bool isExp = (algo == IIRFilter::Algorithm::Exponential);
-        bool isOther = (algo != IIRFilter::Algorithm::Exponential);
-        m_alphaSpin->setEnabled(isExp);
-        m_iirOrderSpin->setEnabled(isOther);
-        m_iirCutoffSpin->setEnabled(isOther);
     }
 }
 
@@ -352,18 +293,12 @@ void MainWindow::startAll()
     std::cout << "startAll: буферы настроены" << std::endl;
     std::cout.flush();
 
-    std::cout << "startAll: ПРОВЕРКА - вызываем FIR фильтр..." << std::endl;
-    std::cout.flush();
-
     std::cout << "startAll: запускаем FIR фильтр..." << std::endl;
     std::cout.flush();
 
     m_firFilter.start(&m_rawBuffer);
 
     std::cout << "startAll: FIR фильтр запущен (возврат из start)" << std::endl;
-    std::cout.flush();
-
-    std::cout << "startAll: ПРОВЕРКА - вызываем IIR фильтр..." << std::endl;
     std::cout.flush();
 
     std::cout << "startAll: запускаем IIR фильтр..." << std::endl;
@@ -434,7 +369,19 @@ void MainWindow::onStartStop()
 
 void MainWindow::onReceiveData(const DataPoint &point)
 {
-    m_rawBuffer.push(point);
+    // Ограничиваем выбросы перед отправкой в фильтры
+    DataPoint clamped = point;
+    if (std::abs(clamped.value) > 100.0f)
+    {
+        clamped.value = (clamped.value > 0) ? 100.0f : -100.0f;
+        static int warnCounter = 0;
+        if (warnCounter++ % 100 == 0)
+        {
+            std::cout << "MainWindow: ограничен выброс: " << point.value
+                      << " -> " << clamped.value << std::endl;
+        }
+    }
+    m_rawBuffer.push(clamped);
 }
 
 void MainWindow::onFIRFiltered(const DataPoint &point)
@@ -485,17 +432,24 @@ void MainWindow::onUpdatePlot()
     if (raw.empty())
         return;
 
-    std::vector<float> rawVals, firVals, iirVals;
-    rawVals.reserve(raw.size());
-    firVals.reserve(fir.size());
-    iirVals.reserve(iir.size());
+    size_t maxSize = std::max({raw.size(), fir.size(), iir.size()});
 
-    for (const auto &p : raw)
-        rawVals.push_back(p.value);
-    for (const auto &p : fir)
-        firVals.push_back(p.value);
-    for (const auto &p : iir)
-        iirVals.push_back(p.value);
+    std::vector<float> rawVals(maxSize, 0.0f);
+    std::vector<float> firVals(maxSize, 0.0f);
+    std::vector<float> iirVals(maxSize, 0.0f);
+
+    for (size_t i = 0; i < raw.size() && i < maxSize; ++i)
+    {
+        rawVals[i] = raw[i].value;
+    }
+    for (size_t i = 0; i < fir.size() && i < maxSize; ++i)
+    {
+        firVals[i] = fir[i].value;
+    }
+    for (size_t i = 0; i < iir.size() && i < maxSize; ++i)
+    {
+        iirVals[i] = iir[i].value;
+    }
 
     m_plotWidget->updateData(rawVals, firVals, iirVals);
 }

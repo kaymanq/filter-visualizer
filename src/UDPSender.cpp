@@ -13,16 +13,7 @@
 UDPSender::UDPSender()
 {
     std::cout << "UDPSender: создан" << std::endl;
-
-#ifdef _WIN32
-    // Winsock уже инициализирован в UDPReceiver
-#endif
-
-    m_socketFd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (m_socketFd == INVALID_SOCKET_VALUE)
-    {
-        std::cerr << "Failed to create sender socket. Error: " << GET_LAST_ERROR() << std::endl;
-    }
+    m_socketFd = INVALID_SOCKET_VALUE;
 }
 
 UDPSender::~UDPSender()
@@ -35,9 +26,17 @@ bool UDPSender::init(const std::string &targetIp, int targetPort)
 {
     std::cout << "UDPSender::init: " << targetIp << ":" << targetPort << std::endl;
 
+    // Закрываем старый сокет, если он был открыт
+    if (m_socketFd != INVALID_SOCKET_VALUE)
+    {
+        CLOSE_SOCKET(m_socketFd);
+        m_socketFd = INVALID_SOCKET_VALUE;
+    }
+
+    m_socketFd = socket(AF_INET, SOCK_DGRAM, 0);
     if (m_socketFd == INVALID_SOCKET_VALUE)
     {
-        std::cerr << "UDPSender: сокет не создан" << std::endl;
+        std::cerr << "Failed to create sender socket. Error: " << GET_LAST_ERROR() << std::endl;
         return false;
     }
 
@@ -48,6 +47,8 @@ bool UDPSender::init(const std::string &targetIp, int targetPort)
     if (inet_pton(AF_INET, targetIp.c_str(), &m_targetAddr.sin_addr) <= 0)
     {
         std::cerr << "Invalid target IP: " << targetIp << std::endl;
+        CLOSE_SOCKET(m_socketFd);
+        m_socketFd = INVALID_SOCKET_VALUE;
         return false;
     }
 
