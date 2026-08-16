@@ -77,7 +77,6 @@ void MainWindow::setupUI()
 
     QTabWidget *tabs = new QTabWidget(this);
 
-    // --- Сеть ---
     QWidget *netTab = new QWidget();
     QFormLayout *netLayout = new QFormLayout(netTab);
 
@@ -101,7 +100,6 @@ void MainWindow::setupUI()
     netLayout->addRow(infoLabel);
     tabs->addTab(netTab, "Network");
 
-    // --- FIR ---
     QWidget *firTab = new QWidget();
     QFormLayout *firLayout = new QFormLayout(firTab);
 
@@ -143,7 +141,6 @@ void MainWindow::setupUI()
 
     tabs->addTab(firTab, "FIR Filters");
 
-    // --- IIR ---
     QWidget *iirTab = new QWidget();
     QFormLayout *iirLayout = new QFormLayout(iirTab);
 
@@ -159,7 +156,6 @@ void MainWindow::setupUI()
 
     tabs->addTab(iirTab, "IIR Filter");
 
-    // --- Отображение ---
     QWidget *displayTab = new QWidget();
     QFormLayout *displayLayout = new QFormLayout(displayTab);
 
@@ -394,9 +390,6 @@ void MainWindow::onSendTarget()
     m_statusLabel->setText("Sent target: " + QString::number(target));
 }
 
-// ==========================================
-// СИНХРОНИЗАЦИЯ БЕЗ ФИЛЬТРАЦИИ ПО TIMESTAMP
-// ==========================================
 void MainWindow::onUpdatePlot()
 {
     if (!m_isRunning)
@@ -409,32 +402,26 @@ void MainWindow::onUpdatePlot()
     if (raw.empty())
         return;
 
-    // ==========================================
-    // 1. ОПРЕДЕЛЯЕМ МАКСИМАЛЬНЫЙ РАЗМЕР
-    // ==========================================
+    if (!fir.empty())
+    {
+        m_lastFirValue = fir.back().value;
+    }
+    if (!iir.empty())
+    {
+        m_lastIirValue = iir.back().value;
+    }
+
     size_t maxSize = std::max({raw.size(), fir.size(), iir.size()});
 
-    // ==========================================
-    // 2. СОЗДАЕМ ВЕКТОРЫ С "ЗАПОМНИ ПОСЛЕДНЕЕ"
-    // ==========================================
     QVector<double> keys(maxSize);
     QVector<double> rawData(maxSize);
     QVector<double> firData(maxSize);
     QVector<double> iirData(maxSize);
 
-    // Индексы для прохода по данным
-    size_t firIdx = 0;
-    size_t iirIdx = 0;
-
-    // Последние известные значения
-    float lastFir = m_lastFirValue;
-    float lastIir = m_lastIirValue;
-
     for (size_t i = 0; i < maxSize; ++i)
     {
         keys[i] = static_cast<double>(i);
 
-        // RAW данные
         if (i < raw.size())
         {
             rawData[i] = static_cast<double>(raw[i].value);
@@ -444,40 +431,25 @@ void MainWindow::onUpdatePlot()
             rawData[i] = 0.0;
         }
 
-        // ==========================================
-        // FIR: ИСПОЛЬЗУЕМ ПОСЛЕДНЕЕ ИЗВЕСТНОЕ
-        // ==========================================
         if (i < fir.size())
         {
-            lastFir = fir[i].value;
-            firIdx++;
+            firData[i] = static_cast<double>(fir[i].value);
         }
-        firData[i] = static_cast<double>(lastFir);
+        else
+        {
+            firData[i] = static_cast<double>(m_lastFirValue);
+        }
 
-        // ==========================================
-        // IIR: ИСПОЛЬЗУЕМ ПОСЛЕДНЕЕ ИЗВЕСТНОЕ
-        // ==========================================
         if (i < iir.size())
         {
-            lastIir = iir[i].value;
-            iirIdx++;
+            iirData[i] = static_cast<double>(iir[i].value);
         }
-        iirData[i] = static_cast<double>(lastIir);
+        else
+        {
+            iirData[i] = static_cast<double>(m_lastIirValue);
+        }
     }
 
-    // Сохраняем последние значения
-    if (firIdx > 0)
-    {
-        m_lastFirValue = lastFir;
-    }
-    if (iirIdx > 0)
-    {
-        m_lastIirValue = lastIir;
-    }
-
-    // ==========================================
-    // 3. ОТЛАДОЧНЫЙ ВЫВОД
-    // ==========================================
     static int counter = 0;
     if (++counter % 50 == 0)
     {

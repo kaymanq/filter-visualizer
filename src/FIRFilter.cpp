@@ -126,11 +126,8 @@ void FIRFilter::filterLoop()
     std::vector<float> window;
     window.reserve(m_windowSize);
 
-    // ==========================================
-    // СЧЕТЧИК ДЛЯ СИНХРОНИЗАЦИИ
-    // ==========================================
-    int processCounter = 0;
-    const int PROCESS_EVERY_N = 2; // Обрабатываем каждые 2 вызова
+    uint32_t lastProcessedTimestamp = 0;
+    bool firstRun = true;
 
     while (!m_stopRequested.load())
     {
@@ -142,17 +139,18 @@ void FIRFilter::filterLoop()
             continue;
         }
 
-        // ==========================================
-        // ПРОПУСКАЕМ КАЖДЫЙ ВТОРОЙ ВЫЗОВ
-        // ==========================================
-        processCounter++;
-        if (processCounter % PROCESS_EVERY_N != 0)
+        size_t start = data.size() - m_windowSize;
+        size_t centerIndex = start + m_windowSize / 2;
+        uint32_t currentTimestamp = data[centerIndex].timestamp;
+
+        if (!firstRun && currentTimestamp == lastProcessedTimestamp)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
+        firstRun = false;
+        lastProcessedTimestamp = currentTimestamp;
 
-        size_t start = data.size() - m_windowSize;
         window.clear();
 
         for (size_t i = start; i < data.size(); ++i)
@@ -161,19 +159,7 @@ void FIRFilter::filterLoop()
         }
 
         DataPoint filtered;
-
-        // ==========================================
-        // ЦЕНТР ОКНА
-        // ==========================================
-        size_t centerIndex = start + m_windowSize / 2;
-        if (centerIndex < data.size())
-        {
-            filtered.timestamp = data[centerIndex].timestamp;
-        }
-        else
-        {
-            filtered.timestamp = data.back().timestamp;
-        }
+        filtered.timestamp = currentTimestamp;
 
         switch (m_algorithm)
         {
@@ -216,19 +202,12 @@ void FIRFilter::filterLoop()
             m_outputCallback(filtered);
         }
 
-        // ==========================================
-        // ЗАДЕРЖКА ДЛЯ СИНХРОНИЗАЦИИ
-        // ==========================================
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     std::cout << "FIRFilter::filterLoop: поток завершен" << std::endl;
     std::cout.flush();
 }
-
-// ==========================================
-// РЕАЛИЗАЦИИ АЛГОРИТМОВ
-// ==========================================
 
 float FIRFilter::boxcarFilter(const std::vector<float> &window) const
 {

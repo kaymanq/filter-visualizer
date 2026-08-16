@@ -6,6 +6,10 @@
 #include <iostream>
 #include <limits>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 template <typename T>
 static T clamp(T value, T min, T max)
 {
@@ -110,37 +114,53 @@ void IIRFilter::filterLoop()
     std::cout << "IIRFilter::filterLoop: поток запущен" << std::endl;
     std::cout.flush();
 
+    uint32_t lastProcessedTimestamp = 0;
+    bool firstRun = true;
+
     while (!m_stopRequested.load())
     {
         auto data = m_inputBuffer->getAll();
 
-        if (!data.empty())
+        if (data.empty())
         {
-            const auto &point = data.back();
-            float output = exponentialFilter(point.value);
-
-            if (std::isnan(output) || std::isinf(output))
-            {
-                static int warnCounter = 0;
-                if (warnCounter++ % 100 == 0)
-                {
-                    std::cout << "IIRFilter: ВЫХОДНЫЕ ДАННЫЕ NaN или Inf! Возвращаем входные данные" << std::endl;
-                    std::cout.flush();
-                }
-                output = point.value;
-            }
-
-            DataPoint filtered;
-            filtered.timestamp = point.timestamp;
-            filtered.value = output;
-
-            if (m_outputCallback)
-            {
-                m_outputCallback(filtered);
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        uint32_t currentTimestamp = data.back().timestamp;
+
+        if (!firstRun && currentTimestamp == lastProcessedTimestamp)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        firstRun = false;
+        lastProcessedTimestamp = currentTimestamp;
+
+        const auto &point = data.back();
+        float output = exponentialFilter(point.value);
+
+        if (std::isnan(output) || std::isinf(output))
+        {
+            static int warnCounter = 0;
+            if (warnCounter++ % 100 == 0)
+            {
+                std::cout << "IIRFilter: ВЫХОДНЫЕ ДАННЫЕ NaN или Inf! Возвращаем входные данные" << std::endl;
+                std::cout.flush();
+            }
+            output = point.value;
+        }
+
+        DataPoint filtered;
+        filtered.timestamp = currentTimestamp;
+        filtered.value = output;
+
+        if (m_outputCallback)
+        {
+            m_outputCallback(filtered);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     std::cout << "IIRFilter::filterLoop: поток завершен" << std::endl;
