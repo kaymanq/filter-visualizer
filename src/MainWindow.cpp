@@ -129,10 +129,7 @@ void MainWindow::setupUI()
     connect(m_firAlgorithmCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onAlgorithmChanged);
     connect(m_windowSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            [this](int v)
-            {
-                m_firFilter.setWindowSize(v);
-            });
+            this, &MainWindow::onWindowSizeChanged);
     connect(m_firCutoffSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [this](double v)
             { m_firFilter.setCutoffFrequency(v); });
@@ -172,6 +169,8 @@ void MainWindow::setupUI()
                 m_plotWidget->setPointCount(v);
                 m_lastFirValue = 0.0f;
                 m_lastIirValue = 0.0f;
+                m_firMap.clear();
+                m_iirMap.clear();
             });
 
     tabs->addTab(displayTab, "Display");
@@ -239,6 +238,12 @@ void MainWindow::onAlgorithmChanged()
         m_firFilter.setAlgorithm(algo);
         m_firCutoffSpin->setEnabled(algo == FIRFilter::Algorithm::LowPass);
     }
+}
+
+void MainWindow::onWindowSizeChanged(int size)
+{
+    m_firFilter.setWindowSize(size);
+    std::cout << "MainWindow: Window Size изменен на " << size << std::endl;
 }
 
 void MainWindow::startAll()
@@ -421,7 +426,6 @@ void MainWindow::onUpdatePlot()
             firData[i] = static_cast<double>(m_lastFirValue);
         }
 
-        // Ищем IIR по timestamp
         auto itIir = m_iirMap.find(raw[i].timestamp);
         if (itIir != m_iirMap.end())
         {

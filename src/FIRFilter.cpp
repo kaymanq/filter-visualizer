@@ -71,8 +71,13 @@ void FIRFilter::stop()
 
 void FIRFilter::setWindowSize(size_t size)
 {
-    m_windowSize = (size % 2 == 0) ? size + 1 : size;
-    std::cout << "FIRFilter: window size = " << m_windowSize << std::endl;
+    size_t newSize = (size % 2 == 0) ? size + 1 : size;
+    if (newSize != m_windowSize)
+    {
+        m_newWindowSize = newSize;
+        m_windowSizeChanged.store(true);
+        std::cout << "FIRFilter: запрошено изменение размера окна на " << m_newWindowSize << std::endl;
+    }
 }
 
 void FIRFilter::setAlgorithm(Algorithm algo)
@@ -128,10 +133,60 @@ void FIRFilter::filterLoop()
 
     bool isFirstRun = true;
     float firstValue = 0.0f;
-    bool windowInitialized = false;
 
     while (!m_stopRequested.load())
     {
+
+        if (m_windowSizeChanged.load())
+        {
+            m_windowSizeChanged.store(false);
+
+            std::vector<float> oldWindow = window;
+            size_t oldSize = m_windowSize;
+            size_t newSize = m_newWindowSize;
+
+            window.clear();
+            window.reserve(newSize);
+
+            if (!oldWindow.empty())
+            {
+                size_t startIdx = (oldSize > newSize) ? (oldSize - newSize) : 0;
+                for (size_t i = startIdx; i < oldSize; ++i)
+                {
+                    window.push_back(oldWindow[i]);
+                }
+
+                while (window.size() < newSize)
+                {
+                    window.insert(window.begin(), oldWindow.front());
+                }
+            }
+            else
+            {
+                auto data = m_inputBuffer->getAll();
+                if (!data.empty())
+                {
+                    float lastValue = data.back().value;
+                    for (size_t i = 0; i < newSize; ++i)
+                    {
+                        window.push_back(lastValue);
+                    }
+                }
+                else
+                {
+                    for (size_t i = 0; i < newSize; ++i)
+                    {
+                        window.push_back(0.0f);
+                    }
+                }
+            }
+
+            m_windowSize = newSize;
+            std::cout << "FIR: размер окна изменен на " << m_windowSize
+                      << ", сохранено " << window.size() << " значений" << std::endl;
+            continue;
+        }
+
         auto data = m_inputBuffer->getAll();
 
         if (data.empty())
@@ -144,7 +199,6 @@ void FIRFilter::filterLoop()
         {
             firstValue = data.back().value;
             isFirstRun = false;
-            windowInitialized = true;
             std::cout << "FIR: первое значение = " << firstValue
                       << ", заполняем окно размером " << m_windowSize << std::endl;
             for (size_t i = 0; i < m_windowSize; ++i)
@@ -154,7 +208,10 @@ void FIRFilter::filterLoop()
             continue;
         }
 
-        window.erase(window.begin());
+        if (window.size() >= m_windowSize)
+        {
+            window.erase(window.begin());
+        }
         window.push_back(data.back().value);
 
         DataPoint filtered;

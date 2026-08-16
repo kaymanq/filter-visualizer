@@ -39,6 +39,7 @@ private slots:
     void onUpdatePlot();
     void onStartStop();
     void onAlgorithmChanged();
+    void onWindowSizeChanged(int size);
 
 private:
     void setupUI();

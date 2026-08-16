@@ -53,9 +53,11 @@ private:
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopRequested{false};
+    std::atomic<bool> m_windowSizeChanged{false}; // Новый флаг
 
     DataBuffer *m_inputBuffer{nullptr};
     size_t m_windowSize{11};
+    size_t m_newWindowSize{11}; // Новый размер для применения
     Algorithm m_algorithm{Algorithm::Boxcar};
     double m_cutoffFreq{0.3};
 
