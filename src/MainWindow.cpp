@@ -42,7 +42,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_plotTimer = new QTimer(this);
     connect(m_plotTimer, &QTimer::timeout, this, &MainWindow::onUpdatePlot);
-    m_plotTimer->start(33); // ~30 FPS
+    m_plotTimer->start(33);
 
     m_statusLabel = new QLabel("Ready. Press 'Start' to begin.");
     statusBar()->addWidget(m_statusLabel);
@@ -77,6 +77,7 @@ void MainWindow::setupUI()
 
     QTabWidget *tabs = new QTabWidget(this);
 
+    // --- Сеть ---
     QWidget *netTab = new QWidget();
     QFormLayout *netLayout = new QFormLayout(netTab);
 
@@ -100,6 +101,7 @@ void MainWindow::setupUI()
     netLayout->addRow(infoLabel);
     tabs->addTab(netTab, "Network");
 
+    // --- FIR ---
     QWidget *firTab = new QWidget();
     QFormLayout *firLayout = new QFormLayout(firTab);
 
@@ -129,13 +131,19 @@ void MainWindow::setupUI()
             this, &MainWindow::onAlgorithmChanged);
     connect(m_windowSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             [this](int v)
-            { m_firFilter.setWindowSize(v); });
+            {
+                m_firFilter.setWindowSize(v);
+                int plotSize = m_plotSizeSpin->value();
+                m_firBuffer.setCapacity(plotSize);
+                m_lastFirValue = 0.0f;
+            });
     connect(m_firCutoffSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [this](double v)
             { m_firFilter.setCutoffFrequency(v); });
 
     tabs->addTab(firTab, "FIR Filters");
 
+    // --- IIR ---
     QWidget *iirTab = new QWidget();
     QFormLayout *iirLayout = new QFormLayout(iirTab);
 
@@ -151,6 +159,7 @@ void MainWindow::setupUI()
 
     tabs->addTab(iirTab, "IIR Filter");
 
+    // --- Отображение ---
     QWidget *displayTab = new QWidget();
     QFormLayout *displayLayout = new QFormLayout(displayTab);
 
@@ -167,6 +176,8 @@ void MainWindow::setupUI()
                 m_firBuffer.setCapacity(v);
                 m_iirBuffer.setCapacity(v);
                 m_plotWidget->setPointCount(v);
+                m_lastFirValue = 0.0f;
+                m_lastIirValue = 0.0f;
             });
 
     tabs->addTab(displayTab, "Display");
@@ -203,7 +214,6 @@ void MainWindow::setupUI()
 
 void MainWindow::onAlgorithmChanged()
 {
-    // ---- FIR ----
     int firIdx = m_firAlgorithmCombo->currentIndex();
     if (firIdx >= 0)
     {
@@ -234,6 +244,10 @@ void MainWindow::onAlgorithmChanged()
         }
         m_firFilter.setAlgorithm(algo);
         m_firCutoffSpin->setEnabled(algo == FIRFilter::Algorithm::LowPass);
+
+        int plotSize = m_plotSizeSpin->value();
+        m_firBuffer.setCapacity(plotSize);
+        m_lastFirValue = 0.0f;
     }
 }
 
@@ -257,9 +271,6 @@ void MainWindow::startAll()
     std::cout << "startAll: Send = " << sendAddr.toStdString() << " : " << sendPort << std::endl;
     std::cout.flush();
 
-    std::cout << "startAll: запускаем UDP Receiver..." << std::endl;
-    std::cout.flush();
-
     if (!m_udpReceiver.start(receiveAddr.toStdString(), receivePort))
     {
         QMessageBox::critical(this, "Error", "Failed to start UDP receiver");
@@ -267,9 +278,6 @@ void MainWindow::startAll()
         return;
     }
     std::cout << "startAll: UDP Receiver запущен" << std::endl;
-    std::cout.flush();
-
-    std::cout << "startAll: инициализируем UDP Sender..." << std::endl;
     std::cout.flush();
 
     if (!m_udpSender.init(sendAddr.toStdString(), sendPort))
@@ -289,25 +297,14 @@ void MainWindow::startAll()
     m_rawBuffer.setCapacity(plotSize);
     m_firBuffer.setCapacity(plotSize);
     m_iirBuffer.setCapacity(plotSize);
+    m_lastFirValue = 0.0f;
+    m_lastIirValue = 0.0f;
 
     std::cout << "startAll: буферы настроены" << std::endl;
     std::cout.flush();
 
-    std::cout << "startAll: запускаем FIR фильтр..." << std::endl;
-    std::cout.flush();
-
     m_firFilter.start(&m_rawBuffer);
-
-    std::cout << "startAll: FIR фильтр запущен (возврат из start)" << std::endl;
-    std::cout.flush();
-
-    std::cout << "startAll: запускаем IIR фильтр..." << std::endl;
-    std::cout.flush();
-
     m_iirFilter.start(&m_rawBuffer);
-
-    std::cout << "startAll: IIR фильтр запущен (возврат из start)" << std::endl;
-    std::cout.flush();
 
     m_isRunning = true;
     m_startStopButton->setText("Stop");
@@ -328,21 +325,10 @@ void MainWindow::stopAll()
         return;
     }
 
-    std::cout << "stopAll: останавливаем UDP Receiver..." << std::endl;
     m_udpReceiver.stop();
-    std::cout << "stopAll: UDP Receiver остановлен" << std::endl;
-
-    std::cout << "stopAll: закрываем UDP Sender..." << std::endl;
     m_udpSender.closeSocket();
-    std::cout << "stopAll: UDP Sender закрыт" << std::endl;
-
-    std::cout << "stopAll: останавливаем FIR фильтр..." << std::endl;
     m_firFilter.stop();
-    std::cout << "stopAll: FIR фильтр остановлен" << std::endl;
-
-    std::cout << "stopAll: останавливаем IIR фильтр..." << std::endl;
     m_iirFilter.stop();
-    std::cout << "stopAll: IIR фильтр остановлен" << std::endl;
 
     m_isRunning = false;
     m_startStopButton->setText("Start");
@@ -369,19 +355,7 @@ void MainWindow::onStartStop()
 
 void MainWindow::onReceiveData(const DataPoint &point)
 {
-    // Ограничиваем выбросы перед отправкой в фильтры
-    DataPoint clamped = point;
-    if (std::abs(clamped.value) > 100.0f)
-    {
-        clamped.value = (clamped.value > 0) ? 100.0f : -100.0f;
-        static int warnCounter = 0;
-        if (warnCounter++ % 100 == 0)
-        {
-            std::cout << "MainWindow: ограничен выброс: " << point.value
-                      << " -> " << clamped.value << std::endl;
-        }
-    }
-    m_rawBuffer.push(clamped);
+    m_rawBuffer.push(point);
 }
 
 void MainWindow::onFIRFiltered(const DataPoint &point)
@@ -420,6 +394,9 @@ void MainWindow::onSendTarget()
     m_statusLabel->setText("Sent target: " + QString::number(target));
 }
 
+// ==========================================
+// СИНХРОНИЗАЦИЯ БЕЗ ФИЛЬТРАЦИИ ПО TIMESTAMP
+// ==========================================
 void MainWindow::onUpdatePlot()
 {
     if (!m_isRunning)
@@ -432,24 +409,85 @@ void MainWindow::onUpdatePlot()
     if (raw.empty())
         return;
 
+    // ==========================================
+    // 1. ОПРЕДЕЛЯЕМ МАКСИМАЛЬНЫЙ РАЗМЕР
+    // ==========================================
     size_t maxSize = std::max({raw.size(), fir.size(), iir.size()});
 
-    std::vector<float> rawVals(maxSize, 0.0f);
-    std::vector<float> firVals(maxSize, 0.0f);
-    std::vector<float> iirVals(maxSize, 0.0f);
+    // ==========================================
+    // 2. СОЗДАЕМ ВЕКТОРЫ С "ЗАПОМНИ ПОСЛЕДНЕЕ"
+    // ==========================================
+    QVector<double> keys(maxSize);
+    QVector<double> rawData(maxSize);
+    QVector<double> firData(maxSize);
+    QVector<double> iirData(maxSize);
 
-    for (size_t i = 0; i < raw.size() && i < maxSize; ++i)
+    // Индексы для прохода по данным
+    size_t firIdx = 0;
+    size_t iirIdx = 0;
+
+    // Последние известные значения
+    float lastFir = m_lastFirValue;
+    float lastIir = m_lastIirValue;
+
+    for (size_t i = 0; i < maxSize; ++i)
     {
-        rawVals[i] = raw[i].value;
-    }
-    for (size_t i = 0; i < fir.size() && i < maxSize; ++i)
-    {
-        firVals[i] = fir[i].value;
-    }
-    for (size_t i = 0; i < iir.size() && i < maxSize; ++i)
-    {
-        iirVals[i] = iir[i].value;
+        keys[i] = static_cast<double>(i);
+
+        // RAW данные
+        if (i < raw.size())
+        {
+            rawData[i] = static_cast<double>(raw[i].value);
+        }
+        else
+        {
+            rawData[i] = 0.0;
+        }
+
+        // ==========================================
+        // FIR: ИСПОЛЬЗУЕМ ПОСЛЕДНЕЕ ИЗВЕСТНОЕ
+        // ==========================================
+        if (i < fir.size())
+        {
+            lastFir = fir[i].value;
+            firIdx++;
+        }
+        firData[i] = static_cast<double>(lastFir);
+
+        // ==========================================
+        // IIR: ИСПОЛЬЗУЕМ ПОСЛЕДНЕЕ ИЗВЕСТНОЕ
+        // ==========================================
+        if (i < iir.size())
+        {
+            lastIir = iir[i].value;
+            iirIdx++;
+        }
+        iirData[i] = static_cast<double>(lastIir);
     }
 
-    m_plotWidget->updateData(rawVals, firVals, iirVals);
+    // Сохраняем последние значения
+    if (firIdx > 0)
+    {
+        m_lastFirValue = lastFir;
+    }
+    if (iirIdx > 0)
+    {
+        m_lastIirValue = lastIir;
+    }
+
+    // ==========================================
+    // 3. ОТЛАДОЧНЫЙ ВЫВОД
+    // ==========================================
+    static int counter = 0;
+    if (++counter % 50 == 0)
+    {
+        std::cout << "Sync: raw=" << raw.size()
+                  << ", fir=" << fir.size()
+                  << ", iir=" << iir.size()
+                  << ", maxSize=" << maxSize
+                  << ", lastFir=" << m_lastFirValue
+                  << ", lastIir=" << m_lastIirValue << std::endl;
+    }
+
+    m_plotWidget->updateData(keys, rawData, firData, iirData);
 }

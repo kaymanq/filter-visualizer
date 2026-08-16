@@ -126,81 +126,109 @@ void FIRFilter::filterLoop()
     std::vector<float> window;
     window.reserve(m_windowSize);
 
+    // ==========================================
+    // СЧЕТЧИК ДЛЯ СИНХРОНИЗАЦИИ
+    // ==========================================
+    int processCounter = 0;
+    const int PROCESS_EVERY_N = 2; // Обрабатываем каждые 2 вызова
+
     while (!m_stopRequested.load())
     {
         auto data = m_inputBuffer->getAll();
 
-        if (data.size() >= m_windowSize)
+        if (data.size() < m_windowSize)
         {
-            size_t start = data.size() - m_windowSize;
-            window.clear();
-
-            for (size_t i = start; i < data.size(); ++i)
-            {
-                window.push_back(data[i].value);
-            }
-
-            DataPoint filtered;
-
-            size_t centerIndex = start + m_windowSize / 2;
-            if (centerIndex < data.size())
-            {
-                filtered.timestamp = data[centerIndex].timestamp;
-            }
-            else
-            {
-                filtered.timestamp = data.back().timestamp;
-            }
-
-            switch (m_algorithm)
-            {
-            case Algorithm::Boxcar:
-                filtered.value = boxcarFilter(window);
-                break;
-            case Algorithm::Hamming:
-                filtered.value = hammingFilter(window);
-                break;
-            case Algorithm::Blackman:
-                filtered.value = blackmanFilter(window);
-                break;
-            case Algorithm::Median:
-                filtered.value = medianFilter(window);
-                break;
-            case Algorithm::Gaussian:
-                filtered.value = gaussianFilter(window);
-                break;
-            case Algorithm::LowPass:
-                filtered.value = lowPassFilter(window);
-                break;
-            default:
-                filtered.value = boxcarFilter(window);
-                break;
-            }
-
-            // Проверка на NaN и Inf
-            if (std::isnan(filtered.value) || std::isinf(filtered.value))
-            {
-                static int warnCounter = 0;
-                if (warnCounter++ % 100 == 0)
-                {
-                    std::cout << "FIRFilter: ВЫХОДНЫЕ ДАННЫЕ NaN или Inf! Возвращаем входные данные" << std::endl;
-                    std::cout.flush();
-                }
-                filtered.value = data.back().value;
-            }
-
-            if (m_outputCallback)
-            {
-                m_outputCallback(filtered);
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
         }
 
+        // ==========================================
+        // ПРОПУСКАЕМ КАЖДЫЙ ВТОРОЙ ВЫЗОВ
+        // ==========================================
+        processCounter++;
+        if (processCounter % PROCESS_EVERY_N != 0)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+
+        size_t start = data.size() - m_windowSize;
+        window.clear();
+
+        for (size_t i = start; i < data.size(); ++i)
+        {
+            window.push_back(data[i].value);
+        }
+
+        DataPoint filtered;
+
+        // ==========================================
+        // ЦЕНТР ОКНА
+        // ==========================================
+        size_t centerIndex = start + m_windowSize / 2;
+        if (centerIndex < data.size())
+        {
+            filtered.timestamp = data[centerIndex].timestamp;
+        }
+        else
+        {
+            filtered.timestamp = data.back().timestamp;
+        }
+
+        switch (m_algorithm)
+        {
+        case Algorithm::Boxcar:
+            filtered.value = boxcarFilter(window);
+            break;
+        case Algorithm::Hamming:
+            filtered.value = hammingFilter(window);
+            break;
+        case Algorithm::Blackman:
+            filtered.value = blackmanFilter(window);
+            break;
+        case Algorithm::Median:
+            filtered.value = medianFilter(window);
+            break;
+        case Algorithm::Gaussian:
+            filtered.value = gaussianFilter(window);
+            break;
+        case Algorithm::LowPass:
+            filtered.value = lowPassFilter(window);
+            break;
+        default:
+            filtered.value = boxcarFilter(window);
+            break;
+        }
+
+        if (std::isnan(filtered.value) || std::isinf(filtered.value))
+        {
+            static int warnCounter = 0;
+            if (warnCounter++ % 100 == 0)
+            {
+                std::cout << "FIRFilter: ВЫХОДНЫЕ ДАННЫЕ NaN или Inf!" << std::endl;
+                std::cout.flush();
+            }
+            filtered.value = data.back().value;
+        }
+
+        if (m_outputCallback)
+        {
+            m_outputCallback(filtered);
+        }
+
+        // ==========================================
+        // ЗАДЕРЖКА ДЛЯ СИНХРОНИЗАЦИИ
+        // ==========================================
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     std::cout << "FIRFilter::filterLoop: поток завершен" << std::endl;
     std::cout.flush();
 }
+
+// ==========================================
+// РЕАЛИЗАЦИИ АЛГОРИТМОВ
+// ==========================================
 
 float FIRFilter::boxcarFilter(const std::vector<float> &window) const
 {
@@ -301,7 +329,6 @@ float FIRFilter::lowPassFilter(const std::vector<float> &window) const
             double arg = M_PI * cutoff * x;
             sinc = static_cast<float>(cutoff * std::sin(arg) / (M_PI * cutoff * x));
         }
-        // Окно Хэмминга для уменьшения эффекта Гиббса
         double angle = 2.0 * M_PI * i / (N - 1);
         float hamming = 0.54f - 0.46f * static_cast<float>(std::cos(angle));
         float w = sinc * hamming;

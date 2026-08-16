@@ -18,9 +18,10 @@ public:
     void setPointCount(int count);
 
     void updateData(
-        const std::vector<float> &raw,
-        const std::vector<float> &fir,
-        const std::vector<float> &iir);
+        const QVector<double> &keys,
+        const QVector<double> &raw,
+        const QVector<double> &fir,
+        const QVector<double> &iir);
 
 private:
     QCPGraph *m_rawGraph{nullptr};

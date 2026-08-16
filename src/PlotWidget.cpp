@@ -3,6 +3,7 @@
 #include <QPen>
 #include <QColor>
 #include <QVector>
+#include <iostream>
 
 PlotWidget::PlotWidget(QWidget *parent)
     : QCustomPlot(parent)
@@ -55,40 +56,45 @@ void PlotWidget::setPointCount(int count)
 }
 
 void PlotWidget::updateData(
-    const std::vector<float> &raw,
-    const std::vector<float> &fir,
-    const std::vector<float> &iir)
+    const QVector<double> &keys,
+    const QVector<double> &raw,
+    const QVector<double> &fir,
+    const QVector<double> &iir)
 {
 
     std::lock_guard<std::mutex> lock(m_dataMutex);
 
-    if (raw.empty())
+    if (raw.isEmpty() || keys.isEmpty())
         return;
 
-    QVector<double> keys(raw.size());
-    QVector<double> rawData(raw.size());
-    QVector<double> firData(fir.size());
-    QVector<double> iirData(iir.size());
-
-    for (size_t i = 0; i < raw.size(); ++i)
+    int size = keys.size();
+    if (raw.size() != size || fir.size() != size || iir.size() != size)
     {
-        keys[i] = static_cast<double>(i);
-        rawData[i] = static_cast<double>(raw[i]);
+        static int warnCounter = 0;
+        if (warnCounter++ % 100 == 0)
+        {
+            std::cout << "PlotWidget: размеры не совпадают! keys=" << size
+                      << ", raw=" << raw.size()
+                      << ", fir=" << fir.size()
+                      << ", iir=" << iir.size() << std::endl;
+        }
+        QVector<double> rawFixed(size), firFixed(size), iirFixed(size);
+        for (int i = 0; i < size; ++i)
+        {
+            rawFixed[i] = (i < raw.size()) ? raw[i] : 0.0;
+            firFixed[i] = (i < fir.size()) ? fir[i] : 0.0;
+            iirFixed[i] = (i < iir.size()) ? iir[i] : 0.0;
+        }
+        m_rawGraph->setData(keys, rawFixed);
+        m_firGraph->setData(keys, firFixed);
+        m_iirGraph->setData(keys, iirFixed);
     }
-
-    for (size_t i = 0; i < fir.size(); ++i)
+    else
     {
-        firData[i] = static_cast<double>(fir[i]);
+        m_rawGraph->setData(keys, raw);
+        m_firGraph->setData(keys, fir);
+        m_iirGraph->setData(keys, iir);
     }
-
-    for (size_t i = 0; i < iir.size(); ++i)
-    {
-        iirData[i] = static_cast<double>(iir[i]);
-    }
-
-    m_rawGraph->setData(keys, rawData);
-    m_firGraph->setData(keys, firData);
-    m_iirGraph->setData(keys, iirData);
 
     yAxis->rescale();
     replot();
