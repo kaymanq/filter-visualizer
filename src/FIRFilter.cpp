@@ -126,40 +126,39 @@ void FIRFilter::filterLoop()
     std::vector<float> window;
     window.reserve(m_windowSize);
 
-    uint32_t lastProcessedTimestamp = 0;
-    bool firstRun = true;
+    bool isFirstRun = true;
+    float firstValue = 0.0f;
+    bool windowInitialized = false;
 
     while (!m_stopRequested.load())
     {
         auto data = m_inputBuffer->getAll();
 
-        if (data.size() < m_windowSize)
+        if (data.empty())
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        size_t start = data.size() - m_windowSize;
-        size_t centerIndex = start + m_windowSize / 2;
-        uint32_t currentTimestamp = data[centerIndex].timestamp;
-
-        if (!firstRun && currentTimestamp == lastProcessedTimestamp)
+        if (isFirstRun)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            firstValue = data.back().value;
+            isFirstRun = false;
+            windowInitialized = true;
+            std::cout << "FIR: первое значение = " << firstValue
+                      << ", заполняем окно размером " << m_windowSize << std::endl;
+            for (size_t i = 0; i < m_windowSize; ++i)
+            {
+                window.push_back(firstValue);
+            }
             continue;
         }
-        firstRun = false;
-        lastProcessedTimestamp = currentTimestamp;
 
-        window.clear();
-
-        for (size_t i = start; i < data.size(); ++i)
-        {
-            window.push_back(data[i].value);
-        }
+        window.erase(window.begin());
+        window.push_back(data.back().value);
 
         DataPoint filtered;
-        filtered.timestamp = currentTimestamp;
+        filtered.timestamp = data.back().timestamp;
 
         switch (m_algorithm)
         {
