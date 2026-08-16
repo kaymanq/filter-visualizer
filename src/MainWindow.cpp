@@ -15,6 +15,7 @@
 #include <QIntValidator>
 #include <QDebug>
 #include <iostream>
+#include <map>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -131,9 +132,6 @@ void MainWindow::setupUI()
             [this](int v)
             {
                 m_firFilter.setWindowSize(v);
-                int plotSize = m_plotSizeSpin->value();
-                m_firBuffer.setCapacity(plotSize);
-                m_lastFirValue = 0.0f;
             });
     connect(m_firCutoffSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [this](double v)
@@ -240,10 +238,6 @@ void MainWindow::onAlgorithmChanged()
         }
         m_firFilter.setAlgorithm(algo);
         m_firCutoffSpin->setEnabled(algo == FIRFilter::Algorithm::LowPass);
-
-        int plotSize = m_plotSizeSpin->value();
-        m_firBuffer.setCapacity(plotSize);
-        m_lastFirValue = 0.0f;
     }
 }
 
@@ -295,6 +289,8 @@ void MainWindow::startAll()
     m_iirBuffer.setCapacity(plotSize);
     m_lastFirValue = 0.0f;
     m_lastIirValue = 0.0f;
+    m_firMap.clear();
+    m_iirMap.clear();
 
     std::cout << "startAll: буферы настроены" << std::endl;
     std::cout.flush();
@@ -357,11 +353,13 @@ void MainWindow::onReceiveData(const DataPoint &point)
 void MainWindow::onFIRFiltered(const DataPoint &point)
 {
     m_firBuffer.push(point);
+    m_firMap[point.timestamp] = point.value;
 }
 
 void MainWindow::onIIRFiltered(const DataPoint &point)
 {
     m_iirBuffer.push(point);
+    m_iirMap[point.timestamp] = point.value;
 }
 
 void MainWindow::onSendTarget()
@@ -396,53 +394,39 @@ void MainWindow::onUpdatePlot()
         return;
 
     auto raw = m_rawBuffer.getAll();
-    auto fir = m_firBuffer.getAll();
-    auto iir = m_iirBuffer.getAll();
 
     if (raw.empty())
         return;
 
-    if (!fir.empty())
-    {
-        m_lastFirValue = fir.back().value;
-    }
-    if (!iir.empty())
-    {
-        m_lastIirValue = iir.back().value;
-    }
+    size_t size = raw.size();
 
-    size_t maxSize = std::max({raw.size(), fir.size(), iir.size()});
+    QVector<double> keys(size);
+    QVector<double> rawData(size);
+    QVector<double> firData(size);
+    QVector<double> iirData(size);
 
-    QVector<double> keys(maxSize);
-    QVector<double> rawData(maxSize);
-    QVector<double> firData(maxSize);
-    QVector<double> iirData(maxSize);
-
-    for (size_t i = 0; i < maxSize; ++i)
+    for (size_t i = 0; i < size; ++i)
     {
         keys[i] = static_cast<double>(i);
+        rawData[i] = static_cast<double>(raw[i].value);
 
-        if (i < raw.size())
+        auto itFir = m_firMap.find(raw[i].timestamp);
+        if (itFir != m_firMap.end())
         {
-            rawData[i] = static_cast<double>(raw[i].value);
-        }
-        else
-        {
-            rawData[i] = 0.0;
-        }
-
-        if (i < fir.size())
-        {
-            firData[i] = static_cast<double>(fir[i].value);
+            firData[i] = static_cast<double>(itFir->second);
+            m_lastFirValue = itFir->second;
         }
         else
         {
             firData[i] = static_cast<double>(m_lastFirValue);
         }
 
-        if (i < iir.size())
+        // Ищем IIR по timestamp
+        auto itIir = m_iirMap.find(raw[i].timestamp);
+        if (itIir != m_iirMap.end())
         {
-            iirData[i] = static_cast<double>(iir[i].value);
+            iirData[i] = static_cast<double>(itIir->second);
+            m_lastIirValue = itIir->second;
         }
         else
         {
@@ -454,9 +438,9 @@ void MainWindow::onUpdatePlot()
     if (++counter % 50 == 0)
     {
         std::cout << "Sync: raw=" << raw.size()
-                  << ", fir=" << fir.size()
-                  << ", iir=" << iir.size()
-                  << ", maxSize=" << maxSize
+                  << ", firMap=" << m_firMap.size()
+                  << ", iirMap=" << m_iirMap.size()
+                  << ", size=" << size
                   << ", lastFir=" << m_lastFirValue
                   << ", lastIir=" << m_lastIirValue << std::endl;
     }

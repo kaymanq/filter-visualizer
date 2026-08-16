@@ -9,6 +9,7 @@
 #include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QLabel>
+#include <map>
 
 #include "UDPReceiver.h"
 #include "UDPSender.h"
@@ -53,6 +54,9 @@ private:
     DataBuffer m_rawBuffer;
     DataBuffer m_firBuffer;
     DataBuffer m_iirBuffer;
+
+    std::map<uint32_t, float> m_firMap;
+    std::map<uint32_t, float> m_iirMap;
 
     PlotWidget *m_plotWidget{nullptr};
 
