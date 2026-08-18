@@ -26,7 +26,6 @@ bool UDPSender::init(const std::string &targetIp, int targetPort)
 {
     std::cout << "UDPSender::init: " << targetIp << ":" << targetPort << std::endl;
 
-    // Закрываем старый сокет, если он был открыт
     if (m_socketFd != INVALID_SOCKET_VALUE)
     {
         CLOSE_SOCKET(m_socketFd);

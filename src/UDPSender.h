@@ -2,7 +2,7 @@
 #define UDPSENDER_H
 
 #include <string>
-#include "UDPReceiver.h" // Для кроссплатформенных определений
+#include "UDPReceiver.h"
 
 class UDPSender
 {
@@ -12,7 +12,7 @@ public:
 
     bool init(const std::string &targetIp, int targetPort);
     void sendTarget(float value);
-    void closeSocket(); // Переименовано, чтобы не конфликтовать
+    void closeSocket();
 
 private:
     SocketType m_socketFd{INVALID_SOCKET_VALUE};
@@ -20,4 +20,4 @@ private:
     bool m_initialized{false};
 };
 
-#endif // UDPSENDER_H
+#endif
