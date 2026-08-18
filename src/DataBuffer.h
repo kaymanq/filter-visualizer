@@ -4,8 +4,6 @@
 #include <vector>
 #include <mutex>
 #include <cstdint>
-#include <algorithm>
-#include <iostream>
 #include <QMetaType>
 
 struct DataPoint
@@ -23,7 +21,12 @@ public:
 
     void push(const DataPoint &point);
     size_t size() const;
-    std::vector<DataPoint> getAll() const;
+    size_t capacity() const { return m_capacity; }
+
+    std::vector<DataPoint> getData() const;
+    std::pair<const DataPoint *, size_t> getRange() const;
+    const DataPoint *getLast() const;
+
     void setCapacity(size_t capacity);
 
 private:
@@ -34,4 +37,4 @@ private:
     size_t m_size;
 };
 
-#endif // DATABUFFER_H
+#endif
