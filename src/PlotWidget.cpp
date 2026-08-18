@@ -8,7 +8,7 @@
 PlotWidget::PlotWidget(QWidget *parent)
     : QCustomPlot(parent)
 {
-
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setBackground(QColor(255, 255, 255));
 
     xAxis->setLabel("Time (samples)");
@@ -35,6 +35,8 @@ PlotWidget::PlotWidget(QWidget *parent)
     m_title->setFont(QFont("Arial", 12, QFont::Bold));
     plotLayout()->insertRow(0);
     plotLayout()->addElement(0, 0, m_title);
+
+    setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
 }
 
 void PlotWidget::setPlotTitle(const QString &title)
@@ -55,47 +57,60 @@ void PlotWidget::setPointCount(int count)
     xAxis->setRange(0, count);
 }
 
+void PlotWidget::setAutoScale(bool enabled)
+{
+    m_autoScale = enabled;
+}
+
+void PlotWidget::setCustomYRange(double min, double max)
+{
+    m_customYMin = min;
+    m_customYMax = max;
+}
+
+void PlotWidget::resizeEvent(QResizeEvent *event)
+{
+    QCustomPlot::resizeEvent(event);
+    replot();
+}
+
+void PlotWidget::wheelEvent(QWheelEvent *event)
+{
+    if (!m_autoScale)
+    {
+        double zoomFactor = 1.0 + (event->angleDelta().y() / 1200.0);
+        double center = yAxis->range().center();
+        double range = yAxis->range().size() / zoomFactor;
+
+        if (range > 0.001)
+        {
+            yAxis->setRange(center - range / 2, center + range / 2);
+            replot();
+            emit wheelZoom(zoomFactor, event->posF());
+        }
+    }
+    event->accept();
+}
+
 void PlotWidget::updateData(
     const QVector<double> &keys,
     const QVector<double> &raw,
     const QVector<double> &fir,
     const QVector<double> &iir)
 {
-
     std::lock_guard<std::mutex> lock(m_dataMutex);
 
     if (raw.isEmpty() || keys.isEmpty())
         return;
 
-    int size = keys.size();
-    if (raw.size() != size || fir.size() != size || iir.size() != size)
+    m_rawGraph->setData(keys, raw);
+    m_firGraph->setData(keys, fir);
+    m_iirGraph->setData(keys, iir);
+
+    if (m_autoScale)
     {
-        static int warnCounter = 0;
-        if (warnCounter++ % 100 == 0)
-        {
-            std::cout << "PlotWidget: размеры не совпадают! keys=" << size
-                      << ", raw=" << raw.size()
-                      << ", fir=" << fir.size()
-                      << ", iir=" << iir.size() << std::endl;
-        }
-        QVector<double> rawFixed(size), firFixed(size), iirFixed(size);
-        for (int i = 0; i < size; ++i)
-        {
-            rawFixed[i] = (i < raw.size()) ? raw[i] : 0.0;
-            firFixed[i] = (i < fir.size()) ? fir[i] : 0.0;
-            iirFixed[i] = (i < iir.size()) ? iir[i] : 0.0;
-        }
-        m_rawGraph->setData(keys, rawFixed);
-        m_firGraph->setData(keys, firFixed);
-        m_iirGraph->setData(keys, iirFixed);
-    }
-    else
-    {
-        m_rawGraph->setData(keys, raw);
-        m_firGraph->setData(keys, fir);
-        m_iirGraph->setData(keys, iir);
+        yAxis->rescale();
     }
 
-    yAxis->rescale();
     replot();
 }
