@@ -20,8 +20,6 @@
 - **4 алгоритма IIR-фильтров**:
   - Exponential Smoothing
   - Butterworth 2nd Order
-  - Chebyshev 2nd Order
-  - Bessel 2nd Order
 - **Визуализация в реальном времени** с помощью QCustomPlot
 - **Многопоточная обработка** данных
 
