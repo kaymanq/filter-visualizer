@@ -57,7 +57,6 @@ bool UDPReceiver::start(const std::string &bindAddr, int port)
 
     SET_NONBLOCKING(m_socketFd);
 
-    // Настройка адреса
     memset(&m_bindAddr, 0, sizeof(m_bindAddr));
     m_bindAddr.sin_family = AF_INET;
     m_bindAddr.sin_port = htons(port);
@@ -101,7 +100,6 @@ void UDPReceiver::stop()
 
     if (m_running.load())
     {
-
         m_stopRequested.store(true);
         m_running.store(false);
 
@@ -156,20 +154,17 @@ void UDPReceiver::receiverLoop()
 
         if (recvLen < 0)
         {
-
             if (m_stopRequested.load())
             {
                 std::cout << "UDPReceiver::receiverLoop: получен сигнал остановки" << std::endl;
                 break;
             }
 
-            // Неблокирующий режим: просто продолжаем
             if (!ERRNO_IS_WOULDBLOCK())
             {
                 std::cerr << "recvfrom error: " << GET_LAST_ERROR() << std::endl;
             }
 
-            // Небольшая задержка, чтобы не грузить CPU
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }

@@ -59,4 +59,4 @@ private:
     DataCallback m_callback;
 };
 
-#endif // UDPRECEIVER_H
+#endif
