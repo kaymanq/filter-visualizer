@@ -10,6 +10,7 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QMessageBox>
 #include <QStatusBar>
 #include <QIntValidator>
@@ -74,6 +75,7 @@ void MainWindow::setupUI()
     m_plotWidget->setMinimumHeight(400);
     m_plotWidget->setPlotTitle("Data from Model");
     m_plotWidget->setAxisLabels("Time (samples)", "Value");
+    m_plotWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     mainLayout->addWidget(m_plotWidget);
 
     QTabWidget *tabs = new QTabWidget(this);
@@ -139,17 +141,34 @@ void MainWindow::setupUI()
     QWidget *iirTab = new QWidget();
     QFormLayout *iirLayout = new QFormLayout(iirTab);
 
+    m_iirAlgorithmCombo = new QComboBox();
+    m_iirAlgorithmCombo->addItem("Exponential Smoothing", 0);
+    m_iirAlgorithmCombo->addItem("Butterworth 2nd Order", 1);
+    iirLayout->addRow("IIR Algorithm:", m_iirAlgorithmCombo);
+
     m_alphaSpin = new QDoubleSpinBox();
     m_alphaSpin->setRange(0.01, 1.0);
     m_alphaSpin->setSingleStep(0.05);
     m_alphaSpin->setValue(0.3);
     iirLayout->addRow("Alpha (0-1):", m_alphaSpin);
 
+    m_iirCutoffSpin = new QDoubleSpinBox();
+    m_iirCutoffSpin->setRange(0.01, 0.49);
+    m_iirCutoffSpin->setSingleStep(0.05);
+    m_iirCutoffSpin->setValue(0.3);
+    m_iirCutoffSpin->setEnabled(false);
+    iirLayout->addRow("Cutoff Frequency (0-1):", m_iirCutoffSpin);
+
+    connect(m_iirAlgorithmCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onAlgorithmChanged);
     connect(m_alphaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [this](double v)
             { m_iirFilter.setAlpha(static_cast<float>(v)); });
+    connect(m_iirCutoffSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            [this](double v)
+            { m_iirFilter.setCutoffFrequency(static_cast<float>(v)); });
 
-    tabs->addTab(iirTab, "IIR Filter");
+    tabs->addTab(iirTab, "IIR Filters");
 
     QWidget *displayTab = new QWidget();
     QFormLayout *displayLayout = new QFormLayout(displayTab);
@@ -160,6 +179,10 @@ void MainWindow::setupUI()
     m_plotSizeSpin->setSingleStep(10);
     displayLayout->addRow("Points on graph:", m_plotSizeSpin);
 
+    m_autoScaleCheck = new QCheckBox("Auto-scale Y axis");
+    m_autoScaleCheck->setChecked(true);
+    displayLayout->addRow(m_autoScaleCheck);
+
     connect(m_plotSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             [this](int v)
             {
@@ -169,9 +192,12 @@ void MainWindow::setupUI()
                 m_plotWidget->setPointCount(v);
                 m_lastFirValue = 0.0f;
                 m_lastIirValue = 0.0f;
-                m_firMap.clear();
-                m_iirMap.clear();
+                std::lock_guard<std::mutex> lock(m_syncMutex);
+                m_syncedData.clear();
             });
+
+    connect(m_autoScaleCheck, &QCheckBox::toggled,
+            this, &MainWindow::onAutoScaleToggled);
 
     tabs->addTab(displayTab, "Display");
 
@@ -203,6 +229,13 @@ void MainWindow::setupUI()
 
     std::cout << "MainWindow::setupUI: ЗАВЕРШЕНО" << std::endl;
     std::cout.flush();
+}
+
+void MainWindow::onAutoScaleToggled(bool checked)
+{
+    m_autoScaleEnabled = checked;
+    m_plotWidget->setAutoScale(checked);
+    std::cout << "Auto-scale: " << (checked ? "ON" : "OFF") << std::endl;
 }
 
 void MainWindow::onAlgorithmChanged()
@@ -237,6 +270,31 @@ void MainWindow::onAlgorithmChanged()
         }
         m_firFilter.setAlgorithm(algo);
         m_firCutoffSpin->setEnabled(algo == FIRFilter::Algorithm::LowPass);
+    }
+
+    int iirIdx = m_iirAlgorithmCombo->currentIndex();
+    if (iirIdx >= 0)
+    {
+        IIRFilter::Algorithm algo;
+        switch (iirIdx)
+        {
+        case 0:
+            algo = IIRFilter::Algorithm::Exponential;
+            break;
+        case 1:
+            algo = IIRFilter::Algorithm::Butterworth;
+            break;
+        default:
+            algo = IIRFilter::Algorithm::Exponential;
+            break;
+        }
+        m_iirFilter.setAlgorithm(algo);
+
+        bool isExp = (algo == IIRFilter::Algorithm::Exponential);
+        bool isButterworth = (algo == IIRFilter::Algorithm::Butterworth);
+
+        m_alphaSpin->setEnabled(isExp);
+        m_iirCutoffSpin->setEnabled(isButterworth);
     }
 }
 
@@ -294,8 +352,10 @@ void MainWindow::startAll()
     m_iirBuffer.setCapacity(plotSize);
     m_lastFirValue = 0.0f;
     m_lastIirValue = 0.0f;
-    m_firMap.clear();
-    m_iirMap.clear();
+    {
+        std::lock_guard<std::mutex> lock(m_syncMutex);
+        m_syncedData.clear();
+    }
 
     std::cout << "startAll: буферы настроены" << std::endl;
     std::cout.flush();
@@ -352,19 +412,31 @@ void MainWindow::onStartStop()
 
 void MainWindow::onReceiveData(const DataPoint &point)
 {
+    std::lock_guard<std::mutex> lock(m_syncMutex);
     m_rawBuffer.push(point);
+    m_syncedData[point.timestamp].raw = point.value;
 }
 
 void MainWindow::onFIRFiltered(const DataPoint &point)
 {
+    std::lock_guard<std::mutex> lock(m_syncMutex);
     m_firBuffer.push(point);
-    m_firMap[point.timestamp] = point.value;
+    auto it = m_syncedData.find(point.timestamp);
+    if (it != m_syncedData.end())
+    {
+        it->second.fir = point.value;
+    }
 }
 
 void MainWindow::onIIRFiltered(const DataPoint &point)
 {
+    std::lock_guard<std::mutex> lock(m_syncMutex);
     m_iirBuffer.push(point);
-    m_iirMap[point.timestamp] = point.value;
+    auto it = m_syncedData.find(point.timestamp);
+    if (it != m_syncedData.end())
+    {
+        it->second.iir = point.value;
+    }
 }
 
 void MainWindow::onSendTarget()
@@ -398,56 +470,58 @@ void MainWindow::onUpdatePlot()
     if (!m_isRunning)
         return;
 
-    auto raw = m_rawBuffer.getAll();
+    std::lock_guard<std::mutex> lock(m_syncMutex);
 
-    if (raw.empty())
+    if (m_syncedData.empty())
         return;
 
-    size_t size = raw.size();
+    std::vector<SyncedPoint> syncedPoints;
+    syncedPoints.reserve(m_syncedData.size());
 
-    QVector<double> keys(size);
-    QVector<double> rawData(size);
-    QVector<double> firData(size);
-    QVector<double> iirData(size);
-
-    for (size_t i = 0; i < size; ++i)
+    for (const auto &pair : m_syncedData)
     {
-        keys[i] = static_cast<double>(i);
-        rawData[i] = static_cast<double>(raw[i].value);
-
-        auto itFir = m_firMap.find(raw[i].timestamp);
-        if (itFir != m_firMap.end())
+        const auto &data = pair.second;
+        if (data.raw.has_value() && data.fir.has_value() && data.iir.has_value())
         {
-            firData[i] = static_cast<double>(itFir->second);
-            m_lastFirValue = itFir->second;
-        }
-        else
-        {
-            firData[i] = static_cast<double>(m_lastFirValue);
-        }
-
-        auto itIir = m_iirMap.find(raw[i].timestamp);
-        if (itIir != m_iirMap.end())
-        {
-            iirData[i] = static_cast<double>(itIir->second);
-            m_lastIirValue = itIir->second;
-        }
-        else
-        {
-            iirData[i] = static_cast<double>(m_lastIirValue);
+            SyncedPoint point;
+            point.timestamp = pair.first;
+            point.raw = data.raw.value();
+            point.fir = data.fir.value();
+            point.iir = data.iir.value();
+            syncedPoints.push_back(point);
         }
     }
+
+    if (syncedPoints.empty())
+        return;
 
     static int counter = 0;
-    if (++counter % 50 == 0)
+    if (++counter % 10 == 0)
     {
-        std::cout << "Sync: raw=" << raw.size()
-                  << ", firMap=" << m_firMap.size()
-                  << ", iirMap=" << m_iirMap.size()
-                  << ", size=" << size
-                  << ", lastFir=" << m_lastFirValue
-                  << ", lastIir=" << m_lastIirValue << std::endl;
+        std::cout << "onUpdatePlot: syncedPoints=" << syncedPoints.size()
+                  << ", total=" << m_syncedData.size() << std::endl;
     }
 
-    m_plotWidget->updateData(keys, rawData, firData, iirData);
+    size_t maxPoints = static_cast<size_t>(m_plotSizeSpin->value());
+    size_t startIdx = (syncedPoints.size() > maxPoints) ? (syncedPoints.size() - maxPoints) : 0;
+    size_t count = syncedPoints.size() - startIdx;
+
+    QVector<double> keys(static_cast<int>(count));
+    QVector<double> rawVals(static_cast<int>(count));
+    QVector<double> firVals(static_cast<int>(count));
+    QVector<double> iirVals(static_cast<int>(count));
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        const auto &point = syncedPoints[startIdx + i];
+        keys[i] = static_cast<double>(i);
+        rawVals[i] = static_cast<double>(point.raw);
+        firVals[i] = static_cast<double>(point.fir);
+        iirVals[i] = static_cast<double>(point.iir);
+
+        m_lastFirValue = point.fir;
+        m_lastIirValue = point.iir;
+    }
+
+    m_plotWidget->updateData(keys, rawVals, firVals, iirVals);
 }

@@ -8,8 +8,12 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QLabel>
 #include <map>
+#include <optional>
+#include <vector>
+#include <mutex>
 
 #include "UDPReceiver.h"
 #include "UDPSender.h"
@@ -17,6 +21,21 @@
 #include "IIRFilter.h"
 #include "DataBuffer.h"
 #include "PlotWidget.h"
+
+struct TripleData
+{
+    std::optional<float> raw;
+    std::optional<float> fir;
+    std::optional<float> iir;
+};
+
+struct SyncedPoint
+{
+    uint32_t timestamp;
+    float raw;
+    float fir;
+    float iir;
+};
 
 class MainWindow : public QMainWindow
 {
@@ -40,6 +59,7 @@ private slots:
     void onStartStop();
     void onAlgorithmChanged();
     void onWindowSizeChanged(int size);
+    void onAutoScaleToggled(bool checked);
 
 private:
     void setupUI();
@@ -56,8 +76,8 @@ private:
     DataBuffer m_firBuffer;
     DataBuffer m_iirBuffer;
 
-    std::map<uint32_t, float> m_firMap;
-    std::map<uint32_t, float> m_iirMap;
+    std::map<uint32_t, TripleData> m_syncedData;
+    std::mutex m_syncMutex;
 
     PlotWidget *m_plotWidget{nullptr};
 
@@ -70,13 +90,16 @@ private:
     QSpinBox *m_windowSizeSpin{nullptr};
     QDoubleSpinBox *m_firCutoffSpin{nullptr};
 
+    QComboBox *m_iirAlgorithmCombo{nullptr};
     QDoubleSpinBox *m_alphaSpin{nullptr};
+    QDoubleSpinBox *m_iirCutoffSpin{nullptr};
 
     QLineEdit *m_targetEdit{nullptr};
     QPushButton *m_sendButton{nullptr};
     QPushButton *m_startStopButton{nullptr};
 
     QSpinBox *m_plotSizeSpin{nullptr};
+    QCheckBox *m_autoScaleCheck{nullptr};
     QLabel *m_statusLabel{nullptr};
 
     QTimer *m_plotTimer{nullptr};
@@ -84,6 +107,8 @@ private:
 
     float m_lastFirValue{0.0f};
     float m_lastIirValue{0.0f};
+
+    bool m_autoScaleEnabled{true};
 };
 
-#endif // MAINWINDOW_H
+#endif
