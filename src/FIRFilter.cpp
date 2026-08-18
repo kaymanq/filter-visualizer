@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <numeric>
+#include <cstring>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -83,6 +85,7 @@ void FIRFilter::setWindowSize(size_t size)
 void FIRFilter::setAlgorithm(Algorithm algo)
 {
     m_algorithm = algo;
+    m_cachedCoeffsValid = false;
     std::cout << "FIRFilter: алгоритм изменен на ";
     switch (algo)
     {
@@ -115,12 +118,94 @@ void FIRFilter::setAlgorithm(Algorithm algo)
 void FIRFilter::setCutoffFrequency(double freq)
 {
     m_cutoffFreq = clamp(freq, 0.01, 0.99);
+    if (m_algorithm == Algorithm::LowPass)
+    {
+        m_cachedCoeffsValid = false;
+    }
     std::cout << "FIRFilter: cutoff frequency = " << m_cutoffFreq << std::endl;
 }
 
 void FIRFilter::setOutputCallback(OutputCallback callback)
 {
     m_outputCallback = callback;
+}
+
+void FIRFilter::updateCoefficients()
+{
+    if (m_cachedCoeffsValid &&
+        m_cachedWindowSize == m_windowSize &&
+        m_cachedAlgorithm == m_algorithm)
+    {
+        return;
+    }
+
+    m_cachedWindowSize = m_windowSize;
+    m_cachedAlgorithm = m_algorithm;
+    m_cachedCoeffs.clear();
+    m_cachedCoeffs.reserve(m_windowSize);
+
+    int N = static_cast<int>(m_windowSize);
+    m_invWindowSize = 1.0f / static_cast<float>(N);
+
+    switch (m_algorithm)
+    {
+    case Algorithm::Hamming:
+        for (int i = 0; i < N; ++i)
+        {
+            double angle = 2.0 * M_PI * i / (N - 1);
+            m_cachedCoeffs.push_back(0.54f - 0.46f * static_cast<float>(std::cos(angle)));
+        }
+        break;
+    case Algorithm::Blackman:
+        for (int i = 0; i < N; ++i)
+        {
+            double angle = 2.0 * M_PI * i / (N - 1);
+            m_cachedCoeffs.push_back(0.42f - 0.5f * static_cast<float>(std::cos(angle)) + 0.08f * static_cast<float>(std::cos(2.0 * angle)));
+        }
+        break;
+    case Algorithm::Gaussian:
+    {
+        float sigma = static_cast<float>(N) / 6.0f;
+        int center = N / 2;
+        m_cachedCoeffs.resize(N);
+        for (int i = 0; i < N; ++i)
+        {
+            float x = static_cast<float>(i - center);
+            m_cachedCoeffs[i] = std::exp(-(x * x) / (2.0f * sigma * sigma));
+        }
+    }
+    break;
+    case Algorithm::LowPass:
+    {
+        float fc = static_cast<float>(m_cutoffFreq);
+        float cutoff = fc * 2.0f;
+        int center = N / 2;
+        m_cachedCoeffs.resize(N);
+        for (int i = 0; i < N; ++i)
+        {
+            float x = static_cast<float>(i - center);
+            float sinc;
+            if (std::abs(x) < 1e-6f)
+            {
+                sinc = cutoff;
+            }
+            else
+            {
+                double arg = M_PI * cutoff * x;
+                sinc = static_cast<float>(cutoff * std::sin(arg) / (M_PI * cutoff * x));
+            }
+            double angle = 2.0 * M_PI * i / (N - 1);
+            float hamming = 0.54f - 0.46f * static_cast<float>(std::cos(angle));
+            m_cachedCoeffs[i] = sinc * hamming;
+        }
+    }
+    break;
+    default:
+        m_cachedCoeffs.assign(N, m_invWindowSize);
+        break;
+    }
+
+    m_cachedCoeffsValid = true;
 }
 
 void FIRFilter::filterLoop()
@@ -130,135 +215,159 @@ void FIRFilter::filterLoop()
 
     std::vector<float> window;
     window.reserve(m_windowSize);
+    updateCoefficients();
 
     bool isFirstRun = true;
-    float firstValue = 0.0f;
+    float lastValue = 0.0f;
+    uint32_t lastTimestamp = 0;
+    int processedCount = 0;
+    bool hasValidData = false;
 
     while (!m_stopRequested.load())
     {
-
-        if (m_windowSizeChanged.load())
-        {
-            m_windowSizeChanged.store(false);
-
-            std::vector<float> oldWindow = window;
-            size_t oldSize = m_windowSize;
-            size_t newSize = m_newWindowSize;
-
-            window.clear();
-            window.reserve(newSize);
-
-            if (!oldWindow.empty())
-            {
-                size_t startIdx = (oldSize > newSize) ? (oldSize - newSize) : 0;
-                for (size_t i = startIdx; i < oldSize; ++i)
-                {
-                    window.push_back(oldWindow[i]);
-                }
-
-                while (window.size() < newSize)
-                {
-                    window.insert(window.begin(), oldWindow.front());
-                }
-            }
-            else
-            {
-                auto data = m_inputBuffer->getAll();
-                if (!data.empty())
-                {
-                    float lastValue = data.back().value;
-                    for (size_t i = 0; i < newSize; ++i)
-                    {
-                        window.push_back(lastValue);
-                    }
-                }
-                else
-                {
-                    for (size_t i = 0; i < newSize; ++i)
-                    {
-                        window.push_back(0.0f);
-                    }
-                }
-            }
-
-            m_windowSize = newSize;
-            std::cout << "FIR: размер окна изменен на " << m_windowSize
-                      << ", сохранено " << window.size() << " значений" << std::endl;
-            continue;
-        }
-
-        auto data = m_inputBuffer->getAll();
-
-        if (data.empty())
+        if (!m_inputBuffer)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        if (isFirstRun)
+        if (m_windowSizeChanged.load())
         {
-            firstValue = data.back().value;
-            isFirstRun = false;
-            std::cout << "FIR: первое значение = " << firstValue
-                      << ", заполняем окно размером " << m_windowSize << std::endl;
-            for (size_t i = 0; i < m_windowSize; ++i)
+            m_windowSizeChanged.store(false);
+            m_windowSize = m_newWindowSize;
+            m_invWindowSize = 1.0f / static_cast<float>(m_windowSize);
+            window.clear();
+            window.reserve(m_windowSize);
+
+            const DataPoint *last = m_inputBuffer->getLast();
+            if (last)
             {
-                window.push_back(firstValue);
+                window.assign(m_windowSize, last->value);
+                lastTimestamp = last->timestamp;
+                lastValue = last->value;
+                hasValidData = true;
             }
+            else
+            {
+                window.assign(m_windowSize, 0.0f);
+                lastTimestamp = 0;
+                hasValidData = false;
+            }
+
+            updateCoefficients();
+            std::cout << "FIR: размер окна изменен на " << m_windowSize << std::endl;
             continue;
         }
 
-        if (window.size() >= m_windowSize)
+        const DataPoint *currentPoint = m_inputBuffer->getLast();
+        if (!currentPoint)
         {
-            window.erase(window.begin());
-        }
-        window.push_back(data.back().value);
-
-        DataPoint filtered;
-        filtered.timestamp = data.back().timestamp;
-
-        switch (m_algorithm)
-        {
-        case Algorithm::Boxcar:
-            filtered.value = boxcarFilter(window);
-            break;
-        case Algorithm::Hamming:
-            filtered.value = hammingFilter(window);
-            break;
-        case Algorithm::Blackman:
-            filtered.value = blackmanFilter(window);
-            break;
-        case Algorithm::Median:
-            filtered.value = medianFilter(window);
-            break;
-        case Algorithm::Gaussian:
-            filtered.value = gaussianFilter(window);
-            break;
-        case Algorithm::LowPass:
-            filtered.value = lowPassFilter(window);
-            break;
-        default:
-            filtered.value = boxcarFilter(window);
-            break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
         }
 
-        if (std::isnan(filtered.value) || std::isinf(filtered.value))
+        if (currentPoint->timestamp == 0)
         {
-            static int warnCounter = 0;
-            if (warnCounter++ % 100 == 0)
+            if (!isFirstRun && hasValidData)
             {
-                std::cout << "FIRFilter: ВЫХОДНЫЕ ДАННЫЕ NaN или Inf!" << std::endl;
-                std::cout.flush();
+                DataPoint filtered;
+                filtered.timestamp = lastTimestamp;
+                filtered.value = lastValue;
+                if (m_outputCallback)
+                {
+                    m_outputCallback(filtered);
+                }
             }
-            filtered.value = data.back().value;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
         }
 
-        if (m_outputCallback)
+        if (currentPoint->timestamp != lastTimestamp)
         {
-            m_outputCallback(filtered);
+            if (std::isnan(currentPoint->value) || std::isinf(currentPoint->value))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+
+            if (isFirstRun)
+            {
+                lastValue = currentPoint->value;
+                lastTimestamp = currentPoint->timestamp;
+                isFirstRun = false;
+                hasValidData = true;
+                window.assign(m_windowSize, lastValue);
+                std::cout << "FIR: первое значение = " << lastValue << ", timestamp=" << lastTimestamp << std::endl;
+                continue;
+            }
+
+            lastValue = currentPoint->value;
+            lastTimestamp = currentPoint->timestamp;
+            hasValidData = true;
+
+            if (window.size() >= m_windowSize)
+            {
+                std::memmove(window.data(), window.data() + 1, (m_windowSize - 1) * sizeof(float));
+                window[m_windowSize - 1] = lastValue;
+            }
+            else
+            {
+                window.push_back(lastValue);
+            }
+
+            DataPoint filtered;
+            filtered.timestamp = currentPoint->timestamp;
+
+            switch (m_algorithm)
+            {
+            case Algorithm::Boxcar:
+                filtered.value = boxcarFilter(window);
+                break;
+            case Algorithm::Hamming:
+                filtered.value = hammingFilter(window);
+                break;
+            case Algorithm::Blackman:
+                filtered.value = blackmanFilter(window);
+                break;
+            case Algorithm::Median:
+                filtered.value = medianFilter(window);
+                break;
+            case Algorithm::Gaussian:
+                filtered.value = gaussianFilter(window);
+                break;
+            case Algorithm::LowPass:
+                filtered.value = lowPassFilter(window);
+                break;
+            default:
+                filtered.value = boxcarFilter(window);
+                break;
+            }
+
+            if (std::isnan(filtered.value) || std::isinf(filtered.value))
+            {
+                static int warnCounter = 0;
+                if (warnCounter++ % 100 == 0)
+                {
+                    std::cout << "FIRFilter: ВЫХОДНЫЕ ДАННЫЕ NaN или Inf!" << std::endl;
+                    std::cout.flush();
+                }
+                filtered.value = currentPoint->value;
+            }
+
+            if (++processedCount % 10 == 0)
+            {
+                std::cout << "FIR: timestamp=" << filtered.timestamp
+                          << ", value=" << filtered.value
+                          << ", windowSize=" << m_windowSize << std::endl;
+            }
+
+            if (m_outputCallback)
+            {
+                m_outputCallback(filtered);
+            }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     std::cout << "FIRFilter::filterLoop: поток завершен" << std::endl;
@@ -269,26 +378,17 @@ float FIRFilter::boxcarFilter(const std::vector<float> &window) const
 {
     if (window.empty())
         return 0.0f;
-    float sum = 0.0f;
-    for (float v : window)
-    {
-        sum += v;
-    }
-    return sum / static_cast<float>(window.size());
+    return std::accumulate(window.begin(), window.end(), 0.0f) * m_invWindowSize;
 }
 
 float FIRFilter::hammingFilter(const std::vector<float> &window) const
 {
     if (window.empty())
         return 0.0f;
-    auto coeffs = getWindowCoefficients();
-    float sum = 0.0f;
-    float weightSum = 0.0f;
-    for (size_t i = 0; i < window.size(); ++i)
-    {
-        sum += window[i] * coeffs[i];
-        weightSum += coeffs[i];
-    }
+
+    const auto &coeffs = m_cachedCoeffs;
+    float sum = std::inner_product(window.begin(), window.end(), coeffs.begin(), 0.0f);
+    float weightSum = std::accumulate(coeffs.begin(), coeffs.end(), 0.0f);
     return (weightSum > 0.0f) ? sum / weightSum : 0.0f;
 }
 
@@ -296,20 +396,10 @@ float FIRFilter::blackmanFilter(const std::vector<float> &window) const
 {
     if (window.empty())
         return 0.0f;
-    const float a0 = 0.42f;
-    const float a1 = 0.5f;
-    const float a2 = 0.08f;
-    float sum = 0.0f;
-    float weightSum = 0.0f;
-    int N = static_cast<int>(window.size());
-    for (int i = 0; i < N; ++i)
-    {
-        double angle1 = 2.0 * M_PI * i / (N - 1);
-        double angle2 = 4.0 * M_PI * i / (N - 1);
-        float w = a0 - a1 * static_cast<float>(std::cos(angle1)) + a2 * static_cast<float>(std::cos(angle2));
-        sum += window[i] * w;
-        weightSum += w;
-    }
+
+    const auto &coeffs = m_cachedCoeffs;
+    float sum = std::inner_product(window.begin(), window.end(), coeffs.begin(), 0.0f);
+    float weightSum = std::accumulate(coeffs.begin(), coeffs.end(), 0.0f);
     return (weightSum > 0.0f) ? sum / weightSum : 0.0f;
 }
 
@@ -317,27 +407,21 @@ float FIRFilter::medianFilter(const std::vector<float> &window) const
 {
     if (window.empty())
         return 0.0f;
+
     std::vector<float> sorted = window;
-    std::sort(sorted.begin(), sorted.end());
-    return sorted[sorted.size() / 2];
+    size_t n = sorted.size() / 2;
+    std::nth_element(sorted.begin(), sorted.begin() + n, sorted.end());
+    return sorted[n];
 }
 
 float FIRFilter::gaussianFilter(const std::vector<float> &window) const
 {
     if (window.empty())
         return 0.0f;
-    float sigma = static_cast<float>(window.size()) / 6.0f;
-    float sum = 0.0f;
-    float weightSum = 0.0f;
-    int N = static_cast<int>(window.size());
-    int center = N / 2;
-    for (int i = 0; i < N; ++i)
-    {
-        float x = static_cast<float>(i - center);
-        float w = std::exp(-(x * x) / (2.0f * sigma * sigma));
-        sum += window[i] * w;
-        weightSum += w;
-    }
+
+    const auto &coeffs = m_cachedCoeffs;
+    float sum = std::inner_product(window.begin(), window.end(), coeffs.begin(), 0.0f);
+    float weightSum = std::accumulate(coeffs.begin(), coeffs.end(), 0.0f);
     return (weightSum > 0.0f) ? sum / weightSum : 0.0f;
 }
 
@@ -345,53 +429,9 @@ float FIRFilter::lowPassFilter(const std::vector<float> &window) const
 {
     if (window.empty())
         return 0.0f;
-    int N = static_cast<int>(window.size());
-    float sum = 0.0f;
-    float weightSum = 0.0f;
-    float fc = static_cast<float>(m_cutoffFreq);
-    int center = N / 2;
-    float cutoff = fc * 2.0f;
-    for (int i = 0; i < N; ++i)
-    {
-        float x = static_cast<float>(i - center);
-        float sinc;
-        if (std::abs(x) < 1e-6f)
-        {
-            sinc = cutoff;
-        }
-        else
-        {
-            double arg = M_PI * cutoff * x;
-            sinc = static_cast<float>(cutoff * std::sin(arg) / (M_PI * cutoff * x));
-        }
-        double angle = 2.0 * M_PI * i / (N - 1);
-        float hamming = 0.54f - 0.46f * static_cast<float>(std::cos(angle));
-        float w = sinc * hamming;
-        sum += window[i] * w;
-        weightSum += w;
-    }
-    return (weightSum > 0.0f) ? sum / weightSum : 0.0f;
-}
 
-std::vector<float> FIRFilter::getWindowCoefficients() const
-{
-    std::vector<float> coeffs(m_windowSize);
-    int N = static_cast<int>(m_windowSize);
-    for (int i = 0; i < N; ++i)
-    {
-        double angle = 2.0 * M_PI * i / (N - 1);
-        switch (m_algorithm)
-        {
-        case Algorithm::Hamming:
-            coeffs[i] = 0.54f - 0.46f * static_cast<float>(std::cos(angle));
-            break;
-        case Algorithm::Blackman:
-            coeffs[i] = 0.42f - 0.5f * static_cast<float>(std::cos(angle)) + 0.08f * static_cast<float>(std::cos(2.0 * angle));
-            break;
-        default:
-            coeffs[i] = 1.0f;
-            break;
-        }
-    }
-    return coeffs;
+    const auto &coeffs = m_cachedCoeffs;
+    float sum = std::inner_product(window.begin(), window.end(), coeffs.begin(), 0.0f);
+    float weightSum = std::accumulate(coeffs.begin(), coeffs.end(), 0.0f);
+    return (weightSum > 0.0f) ? sum / weightSum : 0.0f;
 }

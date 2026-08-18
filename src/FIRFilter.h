@@ -40,6 +40,7 @@ public:
 
 private:
     void filterLoop();
+    void updateCoefficients();
 
     float boxcarFilter(const std::vector<float> &window) const;
     float hammingFilter(const std::vector<float> &window) const;
@@ -48,20 +49,24 @@ private:
     float gaussianFilter(const std::vector<float> &window) const;
     float lowPassFilter(const std::vector<float> &window) const;
 
-    std::vector<float> getWindowCoefficients() const;
-
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopRequested{false};
-    std::atomic<bool> m_windowSizeChanged{false}; // Новый флаг
+    std::atomic<bool> m_windowSizeChanged{false};
+    size_t m_newWindowSize{11};
 
     DataBuffer *m_inputBuffer{nullptr};
     size_t m_windowSize{11};
-    size_t m_newWindowSize{11}; // Новый размер для применения
     Algorithm m_algorithm{Algorithm::Boxcar};
     double m_cutoffFreq{0.3};
+    float m_invWindowSize{1.0f / 11.0f};
+
+    std::vector<float> m_cachedCoeffs;
+    size_t m_cachedWindowSize{0};
+    Algorithm m_cachedAlgorithm{Algorithm::Boxcar};
+    bool m_cachedCoeffsValid{false};
 
     OutputCallback m_outputCallback;
 };
 
-#endif // FIRFILTER_H
+#endif
